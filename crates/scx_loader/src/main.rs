@@ -8,7 +8,7 @@
 mod logger;
 
 use scx_loader::dbus::LoaderClientProxy;
-use scx_loader::*;
+use scx_loader::{config, SchedMode, SupportedSched};
 
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -457,15 +457,9 @@ async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>
                 stop_scheduler(&mut task, &mut cancel_token).await;
 
                 // overwise start scheduler
-                match start_scheduler(scx_sched, sched_args, cancel_token.clone()).await {
-                    Ok(handle) => {
-                        task = Some(handle);
-                        log::debug!("Scheduler started");
-                    }
-                    Err(err) => {
-                        log::error!("Failed to start scheduler: {err}");
-                    }
-                }
+                let handle = start_scheduler(scx_sched, sched_args, cancel_token.clone());
+                task = Some(handle);
+                log::debug!("Scheduler started");
             }
             RunnerMessage::Start((scx_sched, sched_args)) => {
                 // check if sched is running or not
@@ -474,15 +468,9 @@ async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>
                     continue;
                 }
                 // overwise start scheduler
-                match start_scheduler(scx_sched, sched_args, cancel_token.clone()).await {
-                    Ok(handle) => {
-                        task = Some(handle);
-                        log::debug!("Scheduler started");
-                    }
-                    Err(err) => {
-                        log::error!("Failed to start scheduler: {err}");
-                    }
-                }
+                let handle = start_scheduler(scx_sched, sched_args, cancel_token.clone());
+                task = Some(handle);
+                log::debug!("Scheduler started");
             }
             RunnerMessage::Stop => {
                 stop_scheduler(&mut task, &mut cancel_token).await;
@@ -494,15 +482,9 @@ async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>
                 stop_scheduler(&mut task, &mut cancel_token).await;
 
                 // restart scheduler with the same configuration
-                match start_scheduler(scx_sched, sched_args, cancel_token.clone()).await {
-                    Ok(handle) => {
-                        task = Some(handle);
-                        log::debug!("Scheduler restarted");
-                    }
-                    Err(err) => {
-                        log::error!("Failed to restart scheduler: {err}");
-                    }
-                }
+                let handle = start_scheduler(scx_sched, sched_args, cancel_token.clone());
+                task = Some(handle);
+                log::debug!("Scheduler restarted");
             }
         }
     }
@@ -511,13 +493,13 @@ async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>
 }
 
 /// Start the scheduler with the given arguments
-async fn start_scheduler(
+fn start_scheduler(
     scx_crate: SupportedSched,
     args: Vec<String>,
     cancel_token: Arc<tokio_util::sync::CancellationToken>,
-) -> Result<tokio::task::JoinHandle<Result<Option<ExitStatus>>>> {
+) -> tokio::task::JoinHandle<Result<Option<ExitStatus>>> {
     // Ensure the child process exit is handled correctly in the runtime
-    let handle = tokio::spawn(async move {
+    tokio::spawn(async move {
         let mut retries = 0u32;
         let max_retries = 5u32;
 
@@ -563,15 +545,11 @@ async fn start_scheduler(
             }
 
             retries += 1;
-            log::error!(
-                "Failed to start scheduler (attempt {retries}/{max_retries})",
-            );
+            log::error!("Failed to start scheduler (attempt {retries}/{max_retries})");
         }
 
         Ok(last_status)
-    });
-
-    Ok(handle)
+    })
 }
 
 /// Starts the scheduler as a child process and returns child object to manage lifecycle by the
