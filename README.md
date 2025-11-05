@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/scx_loader.svg)](https://crates.io/crates/scx_loader)
 [![Crates.io](https://img.shields.io/crates/v/scxctl.svg)](https://crates.io/crates/scxctl)
 
-`scx_loader` is a system daemon and DBus-based loader for [sched_ext](https://github.com/sched-ext/scx) schedulers.  
+`scx_loader` is a system daemon and DBus-based loader for [sched_ext](https://github.com/sched-ext/scx) schedulers.
 `scxctl` is the command-line client for interacting with the loader, allowing users to switch schedulers, modes, and arguments dynamically.
 
 Both tools were originally part of the main `sched-ext/scx` repository and are now developed independently.
@@ -30,7 +30,7 @@ cargo install scx_loader
 cargo install scxctl
 ```
 
-The binaries will be installed in `~/.cargo/bin`.  
+The binaries will be installed in `~/.cargo/bin`.
 Ensure this directory is in your `PATH`:
 
 ```bash
@@ -63,7 +63,7 @@ sudo find target/release \
     -exec install -Dm755 -t /usr/bin/ {} +
 ```
 
-Make sure you have also installed the necessary configuration files. 
+Make sure you have also installed the necessary configuration files.
 
 ```bash
 sudo install -Dm644 services/scx_loader.service \
@@ -74,6 +74,29 @@ sudo install -Dm644 configs/org.scx.Loader.conf \
     -t /usr/share/dbus-1/system.d/
 sudo install -Dm644 configs/scx_loader.toml \
     /usr/share/scx_loader/config.toml
+```
+
+### 3. Install with xtask
+
+Alternatively, you can use `xtask` to install the required files:
+
+```bash
+cargo xtask install
+```
+
+### Environment Variables for xtask
+
+The `xtask install` command respects several environment variables for customizing installation paths, which is useful for packaging by distributions:
+
+- `VENDOR_PREFIX`: Overrides the default `/usr` prefix for installation paths. (e.g., `/usr/local`)
+- `VENDOR_DATADIR`: Overrides the default `/usr/share` for data files.
+- `VENDOR_SYSCONFDIR`: Overrides the default `/etc` for configuration files.
+- `VENDOR_LIBDIR`: Overrides the default `$VENDOR_PREFIX/lib` for library files.
+
+Additionally, the `--destdir` flag can be used with `xtask install` to create package:
+
+```bash
+cargo xtask install --destdir $pkgdir
 ```
 ---
 
@@ -143,8 +166,8 @@ See: [scxctl](crates/scxctl/README.md)
 
 ## 🤝 Contributing
 
-Pull requests and discussions are welcome!  
-Follow Rust coding conventions and include descriptive commit messages.  
+Pull requests and discussions are welcome!
+Follow Rust coding conventions and include descriptive commit messages.
 Bug reports and proposals can be submitted in the [scx-tools issue tracker](https://github.com/sched-ext/scx-loader/issues).
 
 ---

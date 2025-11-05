@@ -1,8 +1,5 @@
 [workspace]
-members = [
-    "crates/scx_loader",
-    "crates/scxctl",
-]
+members = ["xtask/", "crates/*"]
 resolver = "2"
 
 [profile.release]

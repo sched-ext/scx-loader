@@ -28,5 +28,9 @@ path = "src/lib.rs"
 name = "scx_loader"
 path = "src/main.rs"
 
-[lints.clippy]
-not_unsafe_ptr_arg_deref = "allow"
+[package.metadata.install-files]
+# [verbose name] -> { target = "src location", dest = "destination with annotated env vars" }
+dbus-policy = { target = "configs/org.scx.Loader.conf", dest = "$datadir/dbus-1/system.d/org.scx.Loader.conf" }
+example-config = { target = "configs/scx_loader.toml", dest = "$datadir/scx_loader/config.toml" }
+dbus-service = { target = "services/org.scx.Loader.service", dest = "$datadir/dbus-1/system-services/org.scx.Loader.service" }
+systemd-service = { target = "services/scx_loader.service", dest = "$libdir/systemd/system/scx_loader.service" }
