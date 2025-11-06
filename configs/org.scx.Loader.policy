@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+
+<policyconfig>
+
+  <vendor>ScxLoader</vendor>
+  <vendor_url>https://github.com/sched-ext/scx-loader</vendor_url>
+
+  <action id="org.scx.loader.manage-schedulers">
+    <description>Manage sched-ext schedulers</description>
+    <message>Authentication is required to start, stop, or switch sched-ext schedulers.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+</policyconfig>
