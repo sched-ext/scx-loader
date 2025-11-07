@@ -28,7 +28,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Duration;
 use tokio::time::Instant;
 use zbus::interface;
+use zbus::message::Header;
 use zbus::Connection;
+use zbus_polkit::policykit1::{AuthorityProxy, CheckAuthorizationFlags, Subject};
 
 #[derive(Debug, PartialEq)]
 enum ScxMessage {
@@ -74,6 +76,8 @@ struct Args {
     auto: bool,
 }
 
+const ROOT_ACTION_ID: &str = "org.scx.loader.manage-schedulers";
+
 #[interface(name = "org.scx.Loader")]
 impl ScxLoader {
     /// Get currently running scheduler, in case non is running return "unknown"
@@ -82,9 +86,10 @@ impl ScxLoader {
         if let Some(current_scx) = &self.current_scx {
             let current_scx: &str = current_scx.clone().into();
             log::info!("called {current_scx:?}");
-            return current_scx.to_owned();
+            current_scx.into()
+        } else {
+            "unknown".into()
         }
-        "unknown".to_owned()
     }
 
     /// Get scheduler mode
@@ -114,7 +119,15 @@ impl ScxLoader {
             "scx_rusty",
         ]
     }
-    fn start_scheduler(&mut self, scx_name: SupportedSched, sched_mode: SchedMode) {
+
+    async fn start_scheduler(
+        &mut self,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] hdr: Header<'_>,
+        scx_name: SupportedSched,
+        sched_mode: SchedMode,
+    ) -> zbus::fdo::Result<()> {
+        check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         log::info!("starting {scx_name:?} with mode {sched_mode:?}..");
 
         let _ = self
@@ -123,9 +136,18 @@ impl ScxLoader {
         self.current_scx = Some(scx_name);
         self.current_mode = sched_mode;
         self.current_args = None;
+
+        Ok(())
     }
 
-    fn start_scheduler_with_args(&mut self, scx_name: SupportedSched, scx_args: Vec<String>) {
+    async fn start_scheduler_with_args(
+        &mut self,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] hdr: Header<'_>,
+        scx_name: SupportedSched,
+        scx_args: Vec<String>,
+    ) -> zbus::fdo::Result<()> {
+        check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         log::info!("starting {scx_name:?} with args {scx_args:?}..");
 
         let _ = self.channel.send(ScxMessage::StartSchedArgs((
@@ -136,9 +158,18 @@ impl ScxLoader {
         // reset mode to auto
         self.current_mode = SchedMode::Auto;
         self.current_args = Some(scx_args);
+
+        Ok(())
     }
 
-    fn switch_scheduler(&mut self, scx_name: SupportedSched, sched_mode: SchedMode) {
+    async fn switch_scheduler(
+        &mut self,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] hdr: Header<'_>,
+        scx_name: SupportedSched,
+        sched_mode: SchedMode,
+    ) -> zbus::fdo::Result<()> {
+        check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         log::info!("switching {scx_name:?} with mode {sched_mode:?}..");
 
         let _ = self
@@ -147,9 +178,18 @@ impl ScxLoader {
         self.current_scx = Some(scx_name);
         self.current_mode = sched_mode;
         self.current_args = None;
+
+        Ok(())
     }
 
-    fn switch_scheduler_with_args(&mut self, scx_name: SupportedSched, scx_args: Vec<String>) {
+    async fn switch_scheduler_with_args(
+        &mut self,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] hdr: Header<'_>,
+        scx_name: SupportedSched,
+        scx_args: Vec<String>,
+    ) -> zbus::fdo::Result<()> {
+        check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         log::info!("switching {scx_name:?} with args {scx_args:?}..");
 
         let _ = self.channel.send(ScxMessage::SwitchSchedArgs((
@@ -160,9 +200,16 @@ impl ScxLoader {
         // reset mode to auto
         self.current_mode = SchedMode::Auto;
         self.current_args = Some(scx_args);
+
+        Ok(())
     }
 
-    fn stop_scheduler(&mut self) {
+    async fn stop_scheduler(
+        &mut self,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] hdr: Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         if let Some(current_scx) = &self.current_scx {
             let scx_name: &str = current_scx.clone().into();
 
@@ -171,9 +218,16 @@ impl ScxLoader {
             self.current_scx = None;
             self.current_args = None;
         }
+
+        Ok(())
     }
 
-    fn restart_scheduler(&mut self) -> zbus::fdo::Result<()> {
+    async fn restart_scheduler(
+        &mut self,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] hdr: Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         if let Some(current_scx) = &self.current_scx {
             let scx_name: &str = current_scx.clone().into();
 
@@ -558,4 +612,42 @@ async fn stop_scheduler(
         // Create a new cancellation token
         *cancel_token = Arc::new(tokio_util::sync::CancellationToken::new());
     }
+}
+
+async fn check_authorization(
+    connection: &Connection,
+    header: &Header<'_>,
+    action_id: &str,
+) -> anyhow::Result<()> {
+    log::debug!("Checking auth");
+    let proxy = AuthorityProxy::new(connection).await?;
+
+    let subject = Subject::new_for_message_header(header).expect("Failed to create polkit subject");
+    let auth_result = proxy
+        .check_authorization(
+            &subject,
+            action_id,
+            &std::collections::HashMap::new(),
+            CheckAuthorizationFlags::AllowUserInteraction.into(),
+            "",
+        )
+        .await?;
+    if !auth_result.is_authorized {
+        anyhow::bail!("Not allowed!");
+    }
+    log::debug!("Auth allowed");
+
+    Ok(())
+}
+
+async fn check_authorization_inter(
+    connection: &Connection,
+    header: &Header<'_>,
+    action_id: &str,
+) -> zbus::fdo::Result<()> {
+    if let Err(auth_err) = check_authorization(connection, header, action_id).await {
+        return Err(zbus::fdo::Error::Failed(auth_err.to_string()));
+    }
+
+    Ok(())
 }

@@ -19,6 +19,7 @@ tokio = { version = "1.42.0", features = ["macros", "sync", "rt-multi-thread", "
 tokio-util = "0.7.13"
 toml = "0.8.19"
 zbus = { version = "5.3.1", features = ["tokio"], default-features = false }
+zbus_polkit = { version = "5.0.0", features = ["tokio"], default-features = false }
 zvariant = "5.1"
 
 [lib]
@@ -31,6 +32,7 @@ path = "src/main.rs"
 [package.metadata.install-files]
 # [verbose name] -> { target = "src location", dest = "destination with annotated env vars" }
 dbus-policy = { target = "configs/org.scx.Loader.conf", dest = "$datadir/dbus-1/system.d/org.scx.Loader.conf" }
+polkit-policy = { target = "configs/org.scx.Loader.policy", dest = "$datadir/polkit-1/actions/org.scx.Loader.policy" }
 example-config = { target = "configs/scx_loader.toml", dest = "$datadir/scx_loader/config.toml" }
 dbus-service = { target = "services/org.scx.Loader.service", dest = "$datadir/dbus-1/system-services/org.scx.Loader.service" }
 systemd-service = { target = "services/scx_loader.service", dest = "$libdir/systemd/system/scx_loader.service" }
