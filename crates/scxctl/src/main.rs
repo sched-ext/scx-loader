@@ -34,7 +34,7 @@ fn cmd_list(scx_loader: &LoaderClientProxyBlocking) {
         Ok(sl) => {
             let supported_scheds = sl
                 .iter()
-                .map(|s| remove_scx_prefix(&s.to_string()))
+                .map(|s| remove_scx_prefix(s))
                 .collect::<Vec<String>>();
             println!("supported schedulers: {supported_scheds:?}");
         }
@@ -156,7 +156,7 @@ fn ensure_scx_prefix(input: String) -> String {
     input
 }
 
-fn remove_scx_prefix(input: &String) -> String {
+fn remove_scx_prefix(input: &str) -> String {
     if let Some(strip_input) = input.strip_prefix(SCHED_PREFIX) {
         return strip_input.to_string();
     }
@@ -165,8 +165,10 @@ fn remove_scx_prefix(input: &String) -> String {
 
 fn validate_sched(scx_loader: &LoaderClientProxyBlocking, sched: String) -> SupportedSched {
     let raw_supported_scheds: Vec<String> = scx_loader.supported_schedulers().unwrap();
-    let supported_scheds: Vec<String> =
-        raw_supported_scheds.iter().map(remove_scx_prefix).collect();
+    let supported_scheds: Vec<String> = raw_supported_scheds
+        .iter()
+        .map(|s| remove_scx_prefix(s))
+        .collect();
     if !supported_scheds.contains(&sched) && !raw_supported_scheds.contains(&sched) {
         println!(
             "{} invalid value '{}' for '{}'",
