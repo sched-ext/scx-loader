@@ -242,7 +242,7 @@ fn get_default_scx_flags_for_mode(
         SupportedSched::Tickless => match sched_mode {
             SchedMode::Gaming => vec!["-f", "5000", "-s", "5000"],
             SchedMode::LowLatency => vec!["-f", "5000", "-s", "1000"],
-            SchedMode::PowerSave => vec!["-f", "50", "-p"],
+            SchedMode::PowerSave => vec!["-f", "50"],
             SchedMode::Server => vec!["-f", "100"],
             SchedMode::Auto => vec![],
         },
@@ -315,7 +315,7 @@ server_mode = ["--keep-running"]
 auto_mode = []
 gaming_mode = ["-f", "5000", "-s", "5000"]
 lowlatency_mode = ["-f", "5000", "-s", "1000"]
-powersave_mode = ["-f", "50", "-p"]
+powersave_mode = ["-f", "50"]
 server_mode = ["-f", "100"]
 
 [scheds.scx_rustland]
