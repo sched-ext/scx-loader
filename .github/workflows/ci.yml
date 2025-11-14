@@ -2,15 +2,7 @@ name: Cargo Build & Test
 
 on:
   push:
-    paths-ignore:
-      - 'LICENSE'
-      - '*.md'
-      - '*.sh'
   pull_request:
-    paths-ignore:
-      - 'LICENSE'
-      - '*.md'
-      - '*.sh'
 
 permissions:
   contents: read
