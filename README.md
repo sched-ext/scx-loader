@@ -72,6 +72,10 @@ sudo install -Dm644 services/org.scx.Loader.service \
     -t /usr/share/dbus-1/system-services/
 sudo install -Dm644 configs/org.scx.Loader.conf \
     -t /usr/share/dbus-1/system.d/
+sudo install -Dm644 configs/org.scx.Loader.xml \
+    -t /usr/share/dbus-1/interfaces/
+sudo install -Dm644 configs/org.scx.Loader.policy \
+    -t /usr/share/polkit-1/actions/
 sudo install -Dm644 configs/scx_loader.toml \
     /usr/share/scx_loader/config.toml
 ```
