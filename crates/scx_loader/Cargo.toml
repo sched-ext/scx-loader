@@ -32,6 +32,7 @@ path = "src/main.rs"
 [package.metadata.install-files]
 # [verbose name] -> { target = "src location", dest = "destination with annotated env vars" }
 dbus-policy = { target = "configs/org.scx.Loader.conf", dest = "$datadir/dbus-1/system.d/org.scx.Loader.conf" }
+dbus-interface = { target = "configs/org.scx.Loader.xml", dest = "$datadir/dbus-1/interfaces/org.scx.Loader.xml" }
 polkit-policy = { target = "configs/org.scx.Loader.policy", dest = "$datadir/polkit-1/actions/org.scx.Loader.policy" }
 example-config = { target = "configs/scx_loader.toml", dest = "$datadir/scx_loader/config.toml" }
 dbus-service = { target = "services/org.scx.Loader.service", dest = "$datadir/dbus-1/system-services/org.scx.Loader.service" }
