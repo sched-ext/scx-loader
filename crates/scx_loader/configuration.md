@@ -109,7 +109,7 @@ server_mode = []
 
 ## Example Configuration
 
-The example configuration above shows how to set custom flags for different schedulers and modes, and how to configure `scx_bpfland` to start automatically on boot.
+The example configuration above shows how to set custom flags for different schedulers and modes, and how to configure `scx_cosmos` to start automatically on boot.
 
 * For `scx_bpfland`:
     * Low Latency mode: `-m performance -w`
@@ -146,10 +146,10 @@ The example configuration above shows how to set custom flags for different sche
 * For `scx_beerland`:
     * No custom flags are defined, so the default flags for each mode will be used.
 
-## Fallback Behavior
+### Fallback Behavior
 
 If a specific flag is not defined in the configuration file, `scx_loader` will fall back to the default flags defined in the code.
 
-## Missing Required Fields
+### Missing Required Fields
 
 If the `default_mode` field is missing, it will default to `"Auto"`. If a `[scheds.scx_name]` section is missing, or if specific mode flags are missing within that section, the default flags for the corresponding scheduler and mode will be used. If `default_sched` is missing or empty, no scheduler will be started automatically.
