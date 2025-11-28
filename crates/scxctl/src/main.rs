@@ -130,10 +130,7 @@ fn cmd_restore(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std
     // Check if a default scheduler is configured
     let default_scheduler = scx_loader.default_scheduler()?;
     if default_scheduler == "unknown" {
-        println!(
-            "{} no default scheduler configured",
-            "error:".red().bold()
-        );
+        println!("{} no default scheduler configured", "error:".red().bold());
         println!(
             "\nSet '{}' in your config file to use this command",
             "default_sched".bold()

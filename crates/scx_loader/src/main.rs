@@ -281,9 +281,10 @@ impl ScxLoader {
                 self.default_mode
             );
 
-            let _ = self
-                .channel
-                .send(ScxMessage::SwitchSched((default_scx.clone(), self.default_mode)));
+            let _ = self.channel.send(ScxMessage::SwitchSched((
+                default_scx.clone(),
+                self.default_mode,
+            )));
             self.current_scx = Some(default_scx.clone());
             self.current_mode = self.default_mode;
             self.current_args = None;
