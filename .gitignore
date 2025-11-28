@@ -1,0 +1,9 @@
+*.gitignore
+PKGBUILD
+target
+*.swp
+.cache/
+.vscode/
+tags
+selftest
+CLAUDE.md
