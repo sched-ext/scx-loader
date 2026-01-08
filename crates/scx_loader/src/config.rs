@@ -106,6 +106,7 @@ pub fn get_default_config() -> Config {
         SupportedSched::Rustland,
         SupportedSched::Cosmos,
         SupportedSched::Beerland,
+        SupportedSched::Cake,
     ];
     let scheds_map = HashMap::from(supported_scheds.map(init_default_config_entry));
     Config {
@@ -254,7 +255,10 @@ fn get_default_scx_flags_for_mode(
             SchedMode::Auto => vec!["-s", "20000", "-d", "-c", "0", "-p", "0"],
         },
         // scx_rusty, scx_rustland, scx_beerland doesn't support any of these modes
-        SupportedSched::Rusty | SupportedSched::Rustland | SupportedSched::Beerland => vec![],
+        SupportedSched::Rusty
+        | SupportedSched::Rustland
+        | SupportedSched::Beerland
+        | SupportedSched::Cake => vec![],
     }
 }
 
@@ -333,6 +337,13 @@ powersave_mode = ["-m", "powersave", "-d", "-p", "5000"]
 server_mode = ["-s", "20000"]
 
 [scheds.scx_beerland]
+auto_mode = []
+gaming_mode = []
+lowlatency_mode = []
+powersave_mode = []
+server_mode = []
+
+[scheds.scx_cake]
 auto_mode = []
 gaming_mode = []
 lowlatency_mode = []

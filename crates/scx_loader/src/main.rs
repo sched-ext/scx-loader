@@ -113,6 +113,7 @@ impl ScxLoader {
         vec![
             "scx_beerland",
             "scx_bpfland",
+            "scx_cake",
             "scx_cosmos",
             "scx_flash",
             "scx_lavd",
