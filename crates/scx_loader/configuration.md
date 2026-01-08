@@ -86,7 +86,7 @@ server_mode = []
 
 [scheds.scx_cake]
 auto_mode = []
-gaming_mode = []
+gaming_mode = ["--quantum", "2000", "--sparse-threshold", "50"]
 lowlatency_mode = []
 powersave_mode = []
 server_mode = []
