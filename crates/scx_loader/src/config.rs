@@ -205,7 +205,7 @@ fn get_default_scx_flags_for_mode(
                 vec!["-s", "20000", "-m", "powersave", "-I", "100", "-t", "100"]
             }
             SchedMode::Server => vec!["-s", "20000", "-S"],
-            SchedMode::Gaming | SchedMode::Auto => vec![],
+            SchedMode::Gaming | SchedMode::Auto => vec!["-m", "auto"],
         },
         SupportedSched::Lavd => match sched_mode {
             SchedMode::Gaming | SchedMode::LowLatency => vec!["--performance"],
