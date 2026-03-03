@@ -210,8 +210,7 @@ fn get_default_scx_flags_for_mode(
         SupportedSched::Lavd => match sched_mode {
             SchedMode::Gaming | SchedMode::LowLatency => vec!["--performance"],
             SchedMode::PowerSave => vec!["--powersave"],
-            // NOTE: potentially adding --auto in future
-            SchedMode::Server | SchedMode::Auto => vec![],
+            SchedMode::Server | SchedMode::Auto => vec!["--autopilot"],
         },
         SupportedSched::Flash => match sched_mode {
             SchedMode::Gaming => vec!["-m", "all"],
