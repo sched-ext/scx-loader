@@ -230,7 +230,7 @@ fn get_default_scx_flags_for_mode(
             SchedMode::Server => vec![
                 "-m", "all", "-s", "20000", "-S", "1000", "-I", "-1", "-D", "-L",
             ],
-            SchedMode::Auto => vec![],
+            SchedMode::Auto => vec!["-m", "auto"],
         },
         SupportedSched::P2DQ => match sched_mode {
             SchedMode::Gaming => vec!["--task-slice", "true", "-f", "--sched-mode", "performance"],
