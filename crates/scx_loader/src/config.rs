@@ -237,7 +237,7 @@ fn get_default_scx_flags_for_mode(
             SchedMode::LowLatency => vec!["-y", "-f", "--task-slice", "true"],
             SchedMode::PowerSave => vec!["--sched-mode", "efficiency"],
             SchedMode::Server => vec!["--keep-running"],
-            SchedMode::Auto => vec![],
+            SchedMode::Auto => vec!["--sched-mode", "default"],
         },
         SupportedSched::Tickless => match sched_mode {
             SchedMode::Gaming => vec!["-f", "5000", "-s", "5000"],
