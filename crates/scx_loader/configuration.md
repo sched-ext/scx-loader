@@ -23,7 +23,7 @@ default_mode = "Auto"
 
 [scheds.scx_bpfland]
 auto_mode = ["-m", "auto"]
-gaming_mode = ["-m", "auto"]
+gaming_mode = ["-m", "all"]
 lowlatency_mode = ["-m", "performance", "-w"]
 powersave_mode = ["-s", "20000", "-m", "powersave", "-I", "100", "-t", "100"]
 server_mode = ["-s", "20000", "-S"]
