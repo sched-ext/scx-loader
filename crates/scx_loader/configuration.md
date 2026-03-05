@@ -90,6 +90,13 @@ gaming_mode = []
 lowlatency_mode = []
 powersave_mode = []
 server_mode = []
+
+[scheds.scx_pandemonium]
+auto_mode = []
+gaming_mode = []
+lowlatency_mode = []
+powersave_mode = []
+server_mode = []
 ```
 
 **`default_sched`:**
@@ -153,6 +160,8 @@ The example configuration above shows how to set custom flags for different sche
 * For `scx_beerland`:
     * No custom flags are defined, so the default flags for each mode will be used.
 * For `scx_cake`:
+    * No custom flags are defined, so the default flags for each mode will be used.
+* For `scx_pandemonium`:
     * No custom flags are defined, so the default flags for each mode will be used.
 
 ### Fallback Behavior

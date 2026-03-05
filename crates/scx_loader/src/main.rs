@@ -117,6 +117,7 @@ impl ScxLoader {
             "scx_cosmos",
             "scx_flash",
             "scx_lavd",
+            "scx_pandemonium",
             "scx_p2dq",
             "scx_tickless",
             "scx_rustland",

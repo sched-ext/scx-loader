@@ -107,6 +107,7 @@ pub fn get_default_config() -> Config {
         SupportedSched::Cosmos,
         SupportedSched::Beerland,
         SupportedSched::Cake,
+        SupportedSched::Pandemonium,
     ];
     let scheds_map = HashMap::from(supported_scheds.map(init_default_config_entry));
     Config {
@@ -258,7 +259,8 @@ fn get_default_scx_flags_for_mode(
         SupportedSched::Rusty
         | SupportedSched::Rustland
         | SupportedSched::Beerland
-        | SupportedSched::Cake => vec![],
+        | SupportedSched::Cake
+        | SupportedSched::Pandemonium => vec![],
     }
 }
 
@@ -344,6 +346,13 @@ powersave_mode = []
 server_mode = []
 
 [scheds.scx_cake]
+auto_mode = []
+gaming_mode = []
+lowlatency_mode = []
+powersave_mode = []
+server_mode = []
+
+[scheds.scx_pandemonium]
 auto_mode = []
 gaming_mode = []
 lowlatency_mode = []
