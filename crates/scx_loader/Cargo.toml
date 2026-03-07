@@ -1,26 +1,26 @@
 [package]
 name = "scx_loader"
-version = "1.0.20"
+version = "1.1.0"
 authors = ["Vladislav Nepogodin <vnepogodin@cachyos.org>"]
 edition = "2021"
 description = "DBUS on-demand loader of sched-ext schedulers"
 license = "GPL-2.0-only"
 
 [dependencies]
-anyhow = "1.0.101"
-clap = { version = "4.5.57", features = ["derive", "env", "unicode", "wrap_help"] }
+anyhow = "1.0.102"
+clap = { version = "4.5.60", features = ["derive", "env", "unicode", "wrap_help"] }
 colored = "3.1.1"
 ctrlc = { version = "3.5", features = ["termination"] }
 log = "0.4.29"
-nix = { features = ["process", "signal"], default-features = false, version = "0.31.1" }
+nix = { features = ["process", "signal"], default-features = false, version = "0.31.2" }
 serde = { version = "1.0.228", features = ["derive"] }
-sysinfo = "0.38.1"
-tokio = { version = "1.49.0", features = ["macros", "sync", "rt-multi-thread", "process"] }
+sysinfo = "0.38.3"
+tokio = { version = "1.50.0", features = ["macros", "sync", "rt-multi-thread", "process"] }
 tokio-util = "0.7.18"
-toml = "0.9.11"
-zbus = { version = "5.13.2", features = ["tokio"], default-features = false }
+toml = "1.0.6"
+zbus = { version = "5.14.0", features = ["tokio"], default-features = false }
 zbus_polkit = { version = "5.0.0", features = ["tokio"], default-features = false }
-zvariant = "5.9"
+zvariant = "5.10"
 
 [lib]
 path = "src/lib.rs"
