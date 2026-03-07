@@ -23,6 +23,7 @@ SocketBindDeny=ipv6:tcp
 SocketBindDeny=ipv6:udp
 CapabilityBoundingSet=~CAP_BLOCK_SUSPEND CAP_CHOWN CAP_MKNOD CAP_NET_RAW CAP_SYS_BOOT CAP_SYS_CHROOT CAP_SYS_MODULE CAP_SYS_PACCT CAP_SYS_PTRACE CAP_SYS_TIME CAP_SYSLOG CAP_WAKE_ALARM
 SystemCallFilter=~@aio:EPERM @chown:EPERM @clock:EPERM @cpu-emulation:EPERM @debug:EPERM @keyring:EPERM @module:EPERM @mount:EPERM @obsolete:EPERM @pkey:EPERM @raw-io:EPERM @reboot:EPERM @setuid:EPERM @swap:EPERM @sync:EPERM @timer:EPERM
+SystemCallFilter=perf_event_open
 
 [Install]
 WantedBy=multi-user.target
