@@ -253,7 +253,7 @@ fn get_default_scx_flags_for_mode(
             SchedMode::LowLatency => vec!["-m", "performance", "-c", "0", "-p", "0", "-w"],
             SchedMode::PowerSave => vec!["-m", "powersave", "-d", "-p", "5000"],
             SchedMode::Server => vec!["-s", "20000"],
-            SchedMode::Auto => vec!["-s", "20000", "-d", "-c", "0", "-p", "0"],
+            SchedMode::Auto => vec!["-s", "20000", "-c", "0", "-p", "0"],
         },
         // scx_rusty, scx_rustland, scx_beerland doesn't support any of these modes
         SupportedSched::Rusty
@@ -332,7 +332,7 @@ powersave_mode = []
 server_mode = []
 
 [scheds.scx_cosmos]
-auto_mode = ["-s", "20000", "-d", "-c", "0", "-p", "0"]
+auto_mode = ["-s", "20000", "-c", "0", "-p", "0"]
 gaming_mode = ["-c", "0", "-p", "0"]
 lowlatency_mode = ["-m", "performance", "-c", "0", "-p", "0", "-w"]
 powersave_mode = ["-m", "powersave", "-d", "-p", "5000"]
