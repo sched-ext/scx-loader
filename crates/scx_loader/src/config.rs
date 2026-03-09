@@ -255,11 +255,17 @@ fn get_default_scx_flags_for_mode(
             SchedMode::Server => vec!["-s", "20000"],
             SchedMode::Auto => vec!["-s", "20000", "-c", "0", "-p", "0"],
         },
-        // scx_rusty, scx_rustland, scx_beerland doesn't support any of these modes
+        SupportedSched::Cake => match sched_mode {
+            SchedMode::Gaming => vec!["--profile", "gaming"],
+            SchedMode::LowLatency => vec!["--profile", "esports"],
+            SchedMode::PowerSave => vec!["--profile", "battery"],
+            SchedMode::Server => vec!["--profile", "gaming"],
+            SchedMode::Auto => vec!["--profile", "default"],
+        },
+        // The below Schedulers haven't defined any modes
         SupportedSched::Rusty
         | SupportedSched::Rustland
         | SupportedSched::Beerland
-        | SupportedSched::Cake
         | SupportedSched::Pandemonium => vec![],
     }
 }
@@ -346,11 +352,11 @@ powersave_mode = []
 server_mode = []
 
 [scheds.scx_cake]
-auto_mode = []
-gaming_mode = []
-lowlatency_mode = []
-powersave_mode = []
-server_mode = []
+auto_mode = ["--profile", "default"]
+gaming_mode = ["--profile", "gaming"]
+lowlatency_mode = ["--profile", "esports"]
+powersave_mode = ["--profile", "battery"]
+server_mode = ["--profile", "gaming"]
 
 [scheds.scx_pandemonium]
 auto_mode = []
