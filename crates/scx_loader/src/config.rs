@@ -256,10 +256,9 @@ fn get_default_scx_flags_for_mode(
             SchedMode::Auto => vec!["-s", "20000", "-c", "0", "-p", "0"],
         },
         SupportedSched::Cake => match sched_mode {
-            SchedMode::Gaming => vec!["--profile", "gaming"],
+            SchedMode::Gaming | SchedMode::Server => vec!["--profile", "gaming"],
             SchedMode::LowLatency => vec!["--profile", "esports"],
             SchedMode::PowerSave => vec!["--profile", "battery"],
-            SchedMode::Server => vec!["--profile", "gaming"],
             SchedMode::Auto => vec!["--profile", "default"],
         },
         // The below Schedulers haven't defined any modes
