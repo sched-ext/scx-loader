@@ -71,11 +71,11 @@ powersave_mode = []
 server_mode = []
 
 [scheds.scx_cosmos]
-auto_mode = ["-s", "20000", "-c", "0", "-p", "0"]
-gaming_mode = ["-c", "0", "-p", "0"]
-lowlatency_mode = ["-m", "performance", "-c", "0", "-p", "0", "-w"]
-powersave_mode = ["-m", "powersave", "-d", "-p", "5000"]
-server_mode = ["-s", "20000"]
+auto_mode = []
+gaming_mode = ["-s", "700", "-S"]
+lowlatency_mode = ["-s", "700", "-S", "-m", "performance", "-w"]
+powersave_mode = ["-m", "powersave"]
+server_mode = ["-s", "20000", "-c", "75", "-p", "250"]
 
 [scheds.scx_beerland]
 auto_mode = []
@@ -153,10 +153,10 @@ The example configuration above shows how to set custom flags for different sche
 * For `scx_rustland`:
     * No custom flags are defined, so the default flags for each mode will be used.
 * For `scx_cosmos`:
-    * Gaming mode: `-c 0 -p 0`
-    * Low Latency mode: `-m performance -c 0 -p 0 -w`
-    * Power Save mode: `-m powersave -d -p 5000`
-    * Server mode: `-s 20000`
+    * Gaming mode: `-s 700 -S`
+    * Low Latency mode: `-s 700 -S -m performance -w`
+    * Power Save mode: `-m powersave`
+    * Server mode: `-s 20000 -c 75 -p 250`
 * For `scx_beerland`:
     * No custom flags are defined, so the default flags for each mode will be used.
 * For `scx_cake`:
