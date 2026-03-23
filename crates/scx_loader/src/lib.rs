@@ -42,6 +42,8 @@ pub enum SupportedSched {
     Cake,
     #[serde(rename = "scx_pandemonium")]
     Pandemonium,
+    #[serde(rename = "scx_timely")]
+    Timely,
 }
 
 impl FromStr for SupportedSched {
@@ -60,6 +62,7 @@ impl FromStr for SupportedSched {
             "scx_tickless" => Ok(SupportedSched::Tickless),
             "scx_rustland" => Ok(SupportedSched::Rustland),
             "scx_rusty" => Ok(SupportedSched::Rusty),
+            "scx_timely" => Ok(SupportedSched::Timely),
             _ => Err(anyhow::anyhow!("{scx_name} is not supported")),
         }
     }
@@ -86,6 +89,7 @@ impl From<SupportedSched> for &str {
             SupportedSched::Tickless => "scx_tickless",
             SupportedSched::Rustland => "scx_rustland",
             SupportedSched::Rusty => "scx_rusty",
+            SupportedSched::Timely => "scx_timely",
         }
     }
 }

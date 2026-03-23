@@ -108,6 +108,7 @@ pub fn get_default_config() -> Config {
         SupportedSched::Beerland,
         SupportedSched::Cake,
         SupportedSched::Pandemonium,
+        SupportedSched::Timely,
     ];
     let scheds_map = HashMap::from(supported_scheds.map(init_default_config_entry));
     Config {
@@ -261,6 +262,13 @@ fn get_default_scx_flags_for_mode(
             SchedMode::PowerSave => vec!["--profile", "battery"],
             SchedMode::Auto => vec!["--profile", "default"],
         },
+        SupportedSched::Timely => match sched_mode {
+            SchedMode::Gaming | SchedMode::LowLatency | SchedMode::Auto => {
+                vec!["--mode", "desktop"]
+            }
+            SchedMode::PowerSave => vec!["--mode", "powersave"],
+            SchedMode::Server => vec!["--mode", "server"],
+        },
         // The below Schedulers haven't defined any modes
         SupportedSched::Rusty
         | SupportedSched::Rustland
@@ -363,6 +371,13 @@ gaming_mode = []
 lowlatency_mode = []
 powersave_mode = []
 server_mode = []
+
+[scheds.scx_timely]
+auto_mode = ["--mode", "desktop"]
+gaming_mode = ["--mode", "desktop"]
+lowlatency_mode = ["--mode", "desktop"]
+powersave_mode = ["--mode", "powersave"]
+server_mode = ["--mode", "server"]
 "#;
 
         let parsed_config = parse_config_content(config_str).expect("Failed to parse config");

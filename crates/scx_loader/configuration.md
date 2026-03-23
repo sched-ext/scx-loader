@@ -97,6 +97,13 @@ gaming_mode = []
 lowlatency_mode = []
 powersave_mode = []
 server_mode = []
+
+[scheds.scx_timely]
+auto_mode = ["--mode", "desktop"]
+gaming_mode = ["--mode", "desktop"]
+lowlatency_mode = ["--mode", "desktop"]
+powersave_mode = ["--mode", "powersave"]
+server_mode = ["--mode", "server"]
 ```
 
 **`default_sched`:**
@@ -166,6 +173,11 @@ The example configuration above shows how to set custom flags for different sche
     * Server mode: `--profile gaming`
 * For `scx_pandemonium`:
     * No custom flags are defined, so the default flags for each mode will be used.
+* For `scx_timely`:
+    * Gaming mode: `--mode desktop`
+    * Low Latency mode: `--mode desktop`
+    * Power Save mode: `--mode powersave`
+    * Server mode: `--mode server`
 
 ### Fallback Behavior
 
