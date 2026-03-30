@@ -43,11 +43,11 @@ powersave_mode = ["--powersave"]
 server_mode = ["--autopilot"]
 
 [scheds.scx_flash]
-auto_mode = ["-m", "auto"]
-gaming_mode = ["-m", "all"]
-lowlatency_mode = ["-m", "performance", "-w", "-C", "0"]
-powersave_mode = ["-m", "powersave", "-I", "10000", "-t", "10000", "-s", "10000", "-S", "1000"]
-server_mode = ["-m", "all", "-s", "20000", "-S", "1000", "-I", "-1", "-D", "-L"]
+auto_mode = []
+gaming_mode = []
+lowlatency_mode = []
+powersave_mode = []
+server_mode = []
 
 [scheds.scx_p2dq]
 auto_mode = ["--sched-mode", "default"]
@@ -136,10 +136,7 @@ The example configuration above shows how to set custom flags for different sche
     * Low Latency mode: `--performance`
     * Power Save mode: `--powersave`
 * For `scx_flash`:
-    * Gaming mode: `-m all`
-    * Low Latency mode: `-m performance -w -C 0`
-    * Power Save mode: `-m powersave -I 10000 -t 10000 -s 10000 -S 1000`
-    * Server mode: `-m all -s 20000 -S 1000 -I -1 -D -L`
+    * No custom flags are defined, so the default flags for each mode will be used.
 * For `scx_tickless`:
     * Gaming mode: `-f 5000 -s 5000`
     * Low Latency mode: `-f 5000 -s 1000`
