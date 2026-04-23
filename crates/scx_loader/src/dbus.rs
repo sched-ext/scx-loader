@@ -5,6 +5,7 @@
 // This software may be used and distributed according to the terms of the
 // GNU General Public License version 2.
 
+use crate::HoldEntry;
 use crate::SchedMode;
 use crate::SupportedSched;
 
@@ -53,6 +54,25 @@ pub trait LoaderClient {
     /// Returns an error if no default scheduler is configured.
     fn restore_default(&self) -> zbus::Result<()>;
 
+    /// Activates the requested scheduler/mode for the duration of the hold.
+    /// Returns an opaque cookie that must be passed to `ReleaseScheduler`.
+    /// If multiple holds are active the most recently acquired hold wins.
+    /// The pre-hold scheduler state is saved and restored when all holds are
+    /// released.
+    fn hold_scheduler(
+        &self,
+        scheduler: &str,
+        mode: u32,
+        reason: &str,
+        app_id: &str,
+    ) -> zbus::Result<u32>;
+
+    /// Releases the hold identified by `cookie`.
+    /// When the last hold is released the scheduler state that was active
+    /// before the first hold is restored.  If other holds remain, the most
+    /// recently acquired one becomes active.
+    fn release_scheduler(&self, cookie: u32) -> zbus::Result<()>;
+
     /// The name of the currently running scheduler. If no scheduler is active,
     /// this property will be set to "unknown".
     #[zbus(property)]
@@ -87,4 +107,10 @@ pub trait LoaderClient {
     /// Defaults to 0 (Auto) if not explicitly configured.
     #[zbus(property)]
     fn default_mode(&self) -> zbus::Result<SchedMode>;
+
+    /// Currently active holds, ordered oldest-first.
+    /// Each entry is a struct `(cookie: u32, scheduler: s, mode: u32,
+    /// reason: s, app_id: s)`.
+    #[zbus(property)]
+    fn active_holds(&self) -> zbus::Result<Vec<HoldEntry>>;
 }
