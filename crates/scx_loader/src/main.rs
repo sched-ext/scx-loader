@@ -197,6 +197,11 @@ impl ScxLoader {
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot start scheduler while holds are active".to_string(),
+            ));
+        }
         log::info!("starting {scx_name:?} with mode {sched_mode:?}..");
 
         let _ = self
@@ -217,6 +222,11 @@ impl ScxLoader {
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot start scheduler while holds are active".to_string(),
+            ));
+        }
         log::info!("starting {scx_name:?} with args {scx_args:?}..");
 
         let _ = self.channel.send(ScxMessage::StartSchedArgs((
@@ -239,6 +249,11 @@ impl ScxLoader {
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot switch scheduler while holds are active".to_string(),
+            ));
+        }
         log::info!("switching {scx_name:?} with mode {sched_mode:?}..");
 
         let _ = self
@@ -259,6 +274,11 @@ impl ScxLoader {
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot switch scheduler while holds are active".to_string(),
+            ));
+        }
         log::info!("switching {scx_name:?} with args {scx_args:?}..");
 
         let _ = self.channel.send(ScxMessage::SwitchSchedArgs((
@@ -279,6 +299,11 @@ impl ScxLoader {
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot stop scheduler while holds are active".to_string(),
+            ));
+        }
         if let Some(current_scx) = &self.current_scx {
             let scx_name: &str = current_scx.clone().into();
 
@@ -297,6 +322,11 @@ impl ScxLoader {
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot restart scheduler while holds are active".to_string(),
+            ));
+        }
         if let Some(current_scx) = &self.current_scx {
             let scx_name: &str = current_scx.clone().into();
 
@@ -322,7 +352,11 @@ impl ScxLoader {
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
-
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot restore default scheduler while holds are active".to_string(),
+            ));
+        }
         if let Some(default_scx) = &self.default_sched {
             let scx_name: &str = default_scx.clone().into();
             log::info!(
