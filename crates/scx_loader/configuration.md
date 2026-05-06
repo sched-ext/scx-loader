@@ -85,10 +85,10 @@ powersave_mode = []
 server_mode = []
 
 [scheds.scx_cake]
-auto_mode = ["--profile", "default"]
+auto_mode = ["--profile", "balanced"]
 gaming_mode = ["--profile", "gaming"]
 lowlatency_mode = ["--profile", "esports"]
-powersave_mode = ["--profile", "battery"]
+powersave_mode = ["--profile", "balanced"]
 server_mode = ["--profile", "gaming"]
 
 [scheds.scx_pandemonium]
@@ -181,7 +181,7 @@ The example configuration above shows how to set custom flags for different sche
 * For `scx_cake`:
     * Gaming mode: `--profile gaming`
     * Low Latency mode: `--profile esports`
-    * Power Save mode: `--profile battery`
+    * Power Save mode: `--profile balanced`
     * Server mode: `--profile gaming`
 * For `scx_pandemonium`:
     * No custom flags are defined, so the default flags for each mode will be used.
