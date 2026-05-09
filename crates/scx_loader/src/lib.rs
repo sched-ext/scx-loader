@@ -167,7 +167,7 @@ pub struct SchedState {
 }
 
 /// A single active hold entry, exposed via the `ActiveHolds` property
-/// (array of structs: `a(usssu)`).
+/// (array of structs: `a(ususs)`).
 #[derive(Debug, Clone, Type, Value, OwnedValue, Serialize, Deserialize)]
 pub struct HoldEntry {
     /// Opaque cookie returned to the caller.
