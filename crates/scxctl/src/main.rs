@@ -156,8 +156,7 @@ fn cmd_hold(
     app_id: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sched = validate_sched(scx_loader, sched_name);
-    let sched_str: &str = sched.clone().into();
-    let cookie = scx_loader.hold_scheduler(sched_str, mode as u32, &reason, &app_id)?;
+    let cookie = scx_loader.hold_scheduler(sched.clone(), mode, &reason, &app_id)?;
     println!(
         "holding {sched:?} in {mode:?} mode (reason: {reason:?}, app: {app_id:?}) → cookie {cookie}"
     );

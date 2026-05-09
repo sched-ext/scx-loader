@@ -61,8 +61,8 @@ pub trait LoaderClient {
     /// released.
     fn hold_scheduler(
         &self,
-        scheduler: &str,
-        mode: u32,
+        scheduler: SupportedSched,
+        mode: SchedMode,
         reason: &str,
         app_id: &str,
     ) -> zbus::Result<u32>;

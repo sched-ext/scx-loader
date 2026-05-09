@@ -384,18 +384,12 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
-        scheduler: String,
-        mode: u32,
+        scheduler: SupportedSched,
+        mode: SchedMode,
         reason: String,
         app_id: String,
     ) -> zbus::fdo::Result<u32> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
-
-        let sched = SupportedSched::try_from(scheduler.as_str()).map_err(|e| {
-            zbus::fdo::Error::Failed(format!("Unsupported scheduler '{scheduler}': {e}"))
-        })?;
-        let sched_mode = SchedMode::try_from(mode)
-            .map_err(|e| zbus::fdo::Error::Failed(format!("Unsupported mode '{mode}': {e}")))?;
 
         // Save pre-hold state on the very first hold
         if self.active_holds.is_empty() {
@@ -409,14 +403,14 @@ impl ScxLoader {
 
         let cookie = self.alloc_cookie();
         log::info!(
-            "hold_scheduler: cookie={cookie} sched={scheduler:?} mode={mode} \
+            "hold_scheduler: cookie={cookie} sched={scheduler:?} mode={mode:?} \
              reason={reason:?} app_id={app_id:?}"
         );
 
         self.active_holds.push(HoldEntry {
             cookie,
-            scheduler: scheduler.clone(),
-            mode,
+            scheduler: <SupportedSched as Into<&str>>::into(scheduler.clone()).to_owned(),
+            mode: mode as u32,
             reason,
             app_id,
         });
@@ -424,9 +418,9 @@ impl ScxLoader {
         // Last-write-wins: activate this hold immediately
         let _ = self
             .channel
-            .send(ScxMessage::SwitchSched((sched.clone(), sched_mode)));
-        self.current_scx = Some(sched);
-        self.current_mode = sched_mode;
+            .send(ScxMessage::SwitchSched((scheduler.clone(), mode)));
+        self.current_scx = Some(scheduler);
+        self.current_mode = mode;
         self.current_args = None;
 
         Ok(cookie)
