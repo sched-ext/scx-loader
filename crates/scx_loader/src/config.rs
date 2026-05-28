@@ -241,11 +241,10 @@ fn get_default_scx_flags_for_mode(
             SchedMode::Auto => vec![],
         },
         SupportedSched::Cosmos => match sched_mode {
-            SchedMode::Gaming => vec!["-s", "700", "-S"],
-            SchedMode::LowLatency => vec!["-s", "700", "-S", "-m", "performance", "-w"],
+            SchedMode::Gaming => vec!["-s", "700"],
+            SchedMode::LowLatency => vec!["-s", "700", "-m", "performance", "-w"],
             SchedMode::PowerSave => vec!["-m", "powersave"],
-            SchedMode::Server => vec!["-s", "20000", "-c", "75", "-p", "250"],
-            SchedMode::Auto => vec![],
+            SchedMode::Server | SchedMode::Auto => vec![],
         },
         SupportedSched::Cake => match sched_mode {
             SchedMode::Gaming | SchedMode::Server => vec!["--profile", "gaming"],
@@ -332,10 +331,10 @@ server_mode = []
 
 [scheds.scx_cosmos]
 auto_mode = []
-gaming_mode = ["-s", "700", "-S"]
-lowlatency_mode = ["-s", "700", "-S", "-m", "performance", "-w"]
+gaming_mode = ["-s", "700"]
+lowlatency_mode = ["-s", "700", "-m", "performance", "-w"]
 powersave_mode = ["-m", "powersave"]
-server_mode = ["-s", "20000", "-c", "75", "-p", "250"]
+server_mode = []
 
 [scheds.scx_beerland]
 auto_mode = []
