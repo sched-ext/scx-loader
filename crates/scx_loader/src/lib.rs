@@ -141,3 +141,43 @@ impl From<SchedMode> for &str {
         }
     }
 }
+
+impl TryFrom<u32> for SchedMode {
+    type Error = anyhow::Error;
+
+    fn try_from(v: u32) -> Result<Self, Self::Error> {
+        match v {
+            0 => Ok(SchedMode::Auto),
+            1 => Ok(SchedMode::Gaming),
+            2 => Ok(SchedMode::PowerSave),
+            3 => Ok(SchedMode::LowLatency),
+            4 => Ok(SchedMode::Server),
+            _ => Err(anyhow::anyhow!("unknown SchedMode value {v}")),
+        }
+    }
+}
+
+/// Snapshot of scheduler state saved before the first hold is placed.
+/// `sched == None` means no scheduler was running at that point.
+#[derive(Debug, Clone)]
+pub struct SchedState {
+    pub sched: Option<SupportedSched>,
+    pub mode: SchedMode,
+    pub args: Option<Vec<String>>,
+}
+
+/// A single active hold entry, exposed via the `ActiveHolds` property
+/// (array of structs: `a(ususs)`).
+#[derive(Debug, Clone, Type, Value, OwnedValue, Serialize, Deserialize)]
+pub struct HoldEntry {
+    /// Opaque cookie returned to the caller.
+    pub cookie: u32,
+    /// Scheduler name requested by this hold.
+    pub scheduler: String,
+    /// Scheduler mode requested by this hold.
+    pub mode: u32,
+    /// Human-readable reason supplied by the caller.
+    pub reason: String,
+    /// Application identifier supplied by the caller.
+    pub app_id: String,
+}

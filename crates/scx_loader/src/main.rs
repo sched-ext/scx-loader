@@ -11,7 +11,7 @@
 mod logger;
 
 use scx_loader::dbus::LoaderClientProxy;
-use scx_loader::{config, SchedMode, SupportedSched};
+use scx_loader::{config, HoldEntry, SchedMode, SchedState, SupportedSched};
 
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -70,6 +70,46 @@ struct ScxLoader {
     // Store default configuration from config file
     default_sched: Option<SupportedSched>,
     default_mode: SchedMode,
+    // Hold state
+    next_cookie: u32,
+    active_holds: Vec<HoldEntry>,
+    pre_hold_state: Option<SchedState>,
+}
+
+impl ScxLoader {
+    fn snapshot_state(&self) -> SchedState {
+        SchedState {
+            sched: self.current_scx.clone(),
+            mode: self.current_mode,
+            args: self.current_args.clone(),
+        }
+    }
+
+    fn apply_state(&mut self, state: SchedState) {
+        if let Some(sched) = state.sched.clone() {
+            let msg = if let Some(args) = state.args.clone() {
+                self.current_args = Some(args.clone());
+                self.current_mode = SchedMode::Auto;
+                ScxMessage::SwitchSchedArgs((sched.clone(), args))
+            } else {
+                self.current_args = None;
+                self.current_mode = state.mode;
+                ScxMessage::SwitchSched((sched.clone(), state.mode))
+            };
+            self.current_scx = Some(sched);
+            let _ = self.channel.send(msg);
+        } else {
+            self.current_scx = None;
+            self.current_args = None;
+            let _ = self.channel.send(ScxMessage::StopSched);
+        }
+    }
+
+    fn alloc_cookie(&mut self) -> u32 {
+        let c = self.next_cookie;
+        self.next_cookie = self.next_cookie.wrapping_add(1);
+        c
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -143,6 +183,12 @@ impl ScxLoader {
         self.default_mode
     }
 
+    /// Get list of currently active holds
+    #[zbus(property)]
+    fn active_holds(&self) -> Vec<HoldEntry> {
+        self.active_holds.clone()
+    }
+
     async fn start_scheduler(
         &mut self,
         #[zbus(connection)] conn: &Connection,
@@ -151,6 +197,11 @@ impl ScxLoader {
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot start scheduler while holds are active".to_string(),
+            ));
+        }
         log::info!("starting {scx_name:?} with mode {sched_mode:?}..");
 
         let _ = self
@@ -171,6 +222,11 @@ impl ScxLoader {
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot start scheduler while holds are active".to_string(),
+            ));
+        }
         log::info!("starting {scx_name:?} with args {scx_args:?}..");
 
         let _ = self.channel.send(ScxMessage::StartSchedArgs((
@@ -193,6 +249,11 @@ impl ScxLoader {
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot switch scheduler while holds are active".to_string(),
+            ));
+        }
         log::info!("switching {scx_name:?} with mode {sched_mode:?}..");
 
         let _ = self
@@ -213,6 +274,11 @@ impl ScxLoader {
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot switch scheduler while holds are active".to_string(),
+            ));
+        }
         log::info!("switching {scx_name:?} with args {scx_args:?}..");
 
         let _ = self.channel.send(ScxMessage::SwitchSchedArgs((
@@ -233,6 +299,11 @@ impl ScxLoader {
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot stop scheduler while holds are active".to_string(),
+            ));
+        }
         if let Some(current_scx) = &self.current_scx {
             let scx_name: &str = current_scx.clone().into();
 
@@ -251,6 +322,11 @@ impl ScxLoader {
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot restart scheduler while holds are active".to_string(),
+            ));
+        }
         if let Some(current_scx) = &self.current_scx {
             let scx_name: &str = current_scx.clone().into();
 
@@ -276,7 +352,11 @@ impl ScxLoader {
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
-
+        if !self.active_holds.is_empty() {
+            return Err(zbus::fdo::Error::Failed(
+                "Cannot restore default scheduler while holds are active".to_string(),
+            ));
+        }
         if let Some(default_scx) = &self.default_sched {
             let scx_name: &str = default_scx.clone().into();
             log::info!(
@@ -298,6 +378,116 @@ impl ScxLoader {
                 "No default scheduler is configured".to_string(),
             ))
         }
+    }
+
+    async fn hold_scheduler(
+        &mut self,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] hdr: Header<'_>,
+        scheduler: SupportedSched,
+        mode: SchedMode,
+        reason: String,
+        app_id: String,
+    ) -> zbus::fdo::Result<u32> {
+        check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+
+        // Save pre-hold state on the very first hold
+        if self.active_holds.is_empty() {
+            self.pre_hold_state = Some(self.snapshot_state());
+            log::info!(
+                "hold_scheduler: saved pre-hold state ({:?}, {:?})",
+                self.pre_hold_state.as_ref().map(|s| &s.sched),
+                self.pre_hold_state.as_ref().map(|s| s.mode),
+            );
+        }
+
+        let cookie = self.alloc_cookie();
+        log::info!(
+            "hold_scheduler: cookie={cookie} sched={scheduler:?} mode={mode:?} \
+             reason={reason:?} app_id={app_id:?}"
+        );
+
+        self.active_holds.push(HoldEntry {
+            cookie,
+            scheduler: <SupportedSched as Into<&str>>::into(scheduler.clone()).to_owned(),
+            mode: mode as u32,
+            reason,
+            app_id,
+        });
+
+        // Last-write-wins: activate this hold immediately
+        let _ = self
+            .channel
+            .send(ScxMessage::SwitchSched((scheduler.clone(), mode)));
+        self.current_scx = Some(scheduler);
+        self.current_mode = mode;
+        self.current_args = None;
+
+        Ok(cookie)
+    }
+
+    async fn release_scheduler(
+        &mut self,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] hdr: Header<'_>,
+        cookie: u32,
+    ) -> zbus::fdo::Result<()> {
+        check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+
+        let pos = self
+            .active_holds
+            .iter()
+            .position(|h| h.cookie == cookie)
+            .ok_or_else(|| {
+                zbus::fdo::Error::Failed(format!("No active hold with cookie {cookie}"))
+            })?;
+
+        self.active_holds.remove(pos);
+        log::info!("release_scheduler: released cookie={cookie}");
+
+        if self.active_holds.is_empty() {
+            // All holds gone — restore the pre-hold state
+            let state = self.pre_hold_state.take().unwrap_or(SchedState {
+                sched: None,
+                mode: SchedMode::Auto,
+                args: None,
+            });
+            log::info!(
+                "release_scheduler: all holds released, restoring pre-hold state \
+                 ({:?}, {:?})",
+                state.sched,
+                state.mode,
+            );
+            self.apply_state(state);
+        } else {
+            // Re-activate the most recently acquired remaining hold
+            let last = self.active_holds.last().unwrap().clone();
+            log::info!(
+                "release_scheduler: remaining holds, re-activating cookie={} sched={:?}",
+                last.cookie,
+                last.scheduler,
+            );
+            let sched = SupportedSched::try_from(last.scheduler.as_str()).map_err(|e| {
+                zbus::fdo::Error::Failed(format!(
+                    "Remaining hold has unsupported scheduler '{}': {e}",
+                    last.scheduler
+                ))
+            })?;
+            let sched_mode = SchedMode::try_from(last.mode).map_err(|e| {
+                zbus::fdo::Error::Failed(format!(
+                    "Remaining hold has unsupported mode '{}': {e}",
+                    last.mode
+                ))
+            })?;
+            let _ = self
+                .channel
+                .send(ScxMessage::SwitchSched((sched.clone(), sched_mode)));
+            self.current_scx = Some(sched);
+            self.current_mode = sched_mode;
+            self.current_args = None;
+        }
+
+        Ok(())
     }
 }
 
@@ -411,6 +601,9 @@ async fn main() -> Result<()> {
                 channel: channel.clone(),
                 default_sched: config.default_sched.clone(),
                 default_mode: config.default_mode.unwrap_or(SchedMode::Auto),
+                next_cookie: 0,
+                active_holds: Vec::new(),
+                pre_hold_state: None,
             },
         )
         .await?;
