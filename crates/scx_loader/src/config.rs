@@ -109,6 +109,7 @@ pub fn get_default_config() -> Config {
         SupportedSched::Cake,
         SupportedSched::Pandemonium,
         SupportedSched::Flow,
+        SupportedSched::Chaos,
     ];
     let scheds_map = HashMap::from(supported_scheds.map(init_default_config_entry));
     Config {
@@ -226,7 +227,7 @@ fn get_default_scx_flags_for_mode(
             ],
             SchedMode::Auto => vec!["--autopilot", "--pinned-slice-us", "500"],
         },
-        SupportedSched::P2DQ => match sched_mode {
+        SupportedSched::P2DQ | SupportedSched::Chaos => match sched_mode {
             SchedMode::Gaming => vec!["--task-slice", "true", "-f", "--sched-mode", "performance"],
             SchedMode::LowLatency => vec!["-y", "-f", "--task-slice", "true"],
             SchedMode::PowerSave => vec!["--sched-mode", "efficiency"],
@@ -363,6 +364,13 @@ gaming_mode = []
 lowlatency_mode = []
 powersave_mode = []
 server_mode = []
+
+[scheds.scx_chaos]
+auto_mode = ["--sched-mode", "default"]
+gaming_mode = ["--task-slice", "true", "-f", "--sched-mode", "performance"]
+lowlatency_mode = ["-y", "-f", "--task-slice", "true"]
+powersave_mode = ["--sched-mode", "efficiency"]
+server_mode = ["--keep-running"]
 "#;
 
         let parsed_config = parse_config_content(config_str).expect("Failed to parse config");
