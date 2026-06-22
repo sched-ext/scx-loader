@@ -120,6 +120,7 @@ impl ScxLoader {
             "scx_flow",
             "scx_lavd",
             "scx_layered",
+            "scx_mitosis",
             "scx_pandemonium",
             "scx_p2dq",
             "scx_tickless",
