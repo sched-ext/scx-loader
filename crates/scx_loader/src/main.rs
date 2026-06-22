@@ -124,6 +124,7 @@ impl ScxLoader {
             "scx_pandemonium",
             "scx_p2dq",
             "scx_tickless",
+            "scx_rlfifo",
             "scx_rustland",
             "scx_rusty",
         ]

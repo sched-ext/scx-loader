@@ -112,6 +112,7 @@ pub fn get_default_config() -> Config {
         SupportedSched::Chaos,
         SupportedSched::Layered,
         SupportedSched::Mitosis,
+        SupportedSched::Rlfifo,
     ];
     let scheds_map = HashMap::from(supported_scheds.map(init_default_config_entry));
     Config {
@@ -264,6 +265,7 @@ fn get_default_scx_flags_for_mode(
         | SupportedSched::Chaos
         | SupportedSched::Layered
         | SupportedSched::Mitosis
+        | SupportedSched::Rlfifo
         | SupportedSched::Flow => vec![],
     }
 }
@@ -385,6 +387,13 @@ powersave_mode = []
 server_mode = []
 
 [scheds.scx_mitosis]
+auto_mode = []
+gaming_mode = []
+lowlatency_mode = []
+powersave_mode = []
+server_mode = []
+
+[scheds.scx_rlfifo]
 auto_mode = []
 gaming_mode = []
 lowlatency_mode = []

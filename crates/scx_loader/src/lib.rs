@@ -50,6 +50,8 @@ pub enum SupportedSched {
     Layered,
     #[serde(rename = "scx_mitosis")]
     Mitosis,
+    #[serde(rename = "scx_rlfifo")]
+    Rlfifo,
 }
 
 impl FromStr for SupportedSched {
@@ -70,6 +72,7 @@ impl FromStr for SupportedSched {
             "scx_pandemonium" => Ok(SupportedSched::Pandemonium),
             "scx_p2dq" => Ok(SupportedSched::P2DQ),
             "scx_tickless" => Ok(SupportedSched::Tickless),
+            "scx_rlfifo" => Ok(SupportedSched::Rlfifo),
             "scx_rustland" => Ok(SupportedSched::Rustland),
             "scx_rusty" => Ok(SupportedSched::Rusty),
             _ => Err(anyhow::anyhow!("{scx_name} is not supported")),
@@ -100,6 +103,7 @@ impl From<SupportedSched> for &str {
             SupportedSched::Pandemonium => "scx_pandemonium",
             SupportedSched::P2DQ => "scx_p2dq",
             SupportedSched::Tickless => "scx_tickless",
+            SupportedSched::Rlfifo => "scx_rlfifo",
             SupportedSched::Rustland => "scx_rustland",
             SupportedSched::Rusty => "scx_rusty",
         }
