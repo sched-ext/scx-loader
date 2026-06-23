@@ -282,6 +282,7 @@ mod tests {
     use crate::config::*;
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_default_config() {
         let config_str = r#"
 default_mode = "Auto"
