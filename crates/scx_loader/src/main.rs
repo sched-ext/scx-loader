@@ -118,6 +118,7 @@ impl ScxLoader {
             "scx_cosmos",
             "scx_flash",
             "scx_flow",
+            "scx_forge",
             "scx_lavd",
             "scx_maestro",
             "scx_mitosis",

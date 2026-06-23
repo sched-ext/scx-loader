@@ -112,6 +112,7 @@ pub fn get_default_config() -> Config {
         SupportedSched::Chaos,
         SupportedSched::Mitosis,
         SupportedSched::Maestro,
+        SupportedSched::Forge,
     ];
     let scheds_map = HashMap::from(supported_scheds.map(init_default_config_entry));
     Config {
@@ -262,7 +263,8 @@ fn get_default_scx_flags_for_mode(
         | SupportedSched::Flash
         | SupportedSched::Flow
         | SupportedSched::Mitosis
-        | SupportedSched::Maestro => vec![],
+        | SupportedSched::Maestro
+        | SupportedSched::Forge => vec![],
     }
 }
 
@@ -383,6 +385,13 @@ powersave_mode = []
 server_mode = []
 
 [scheds.scx_maestro]
+auto_mode = []
+gaming_mode = []
+lowlatency_mode = []
+powersave_mode = []
+server_mode = []
+
+[scheds.scx_forge]
 auto_mode = []
 gaming_mode = []
 lowlatency_mode = []

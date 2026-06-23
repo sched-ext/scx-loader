@@ -50,6 +50,8 @@ pub enum SupportedSched {
     Mitosis,
     #[serde(rename = "scx_maestro")]
     Maestro,
+    #[serde(rename = "scx_forge")]
+    Forge,
 }
 
 impl FromStr for SupportedSched {
@@ -64,6 +66,7 @@ impl FromStr for SupportedSched {
             "scx_cosmos" => Ok(SupportedSched::Cosmos),
             "scx_flash" => Ok(SupportedSched::Flash),
             "scx_flow" => Ok(SupportedSched::Flow),
+            "scx_forge" => Ok(SupportedSched::Forge),
             "scx_lavd" => Ok(SupportedSched::Lavd),
             "scx_maestro" => Ok(SupportedSched::Maestro),
             "scx_mitosis" => Ok(SupportedSched::Mitosis),
@@ -94,6 +97,7 @@ impl From<SupportedSched> for &str {
             SupportedSched::Cosmos => "scx_cosmos",
             SupportedSched::Flash => "scx_flash",
             SupportedSched::Flow => "scx_flow",
+            SupportedSched::Forge => "scx_forge",
             SupportedSched::Lavd => "scx_lavd",
             SupportedSched::Maestro => "scx_maestro",
             SupportedSched::Mitosis => "scx_mitosis",
