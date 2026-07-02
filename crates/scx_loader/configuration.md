@@ -104,6 +104,13 @@ gaming_mode = []
 lowlatency_mode = []
 powersave_mode = []
 server_mode = []
+
+[scheds.scx_forge]
+auto_mode = []
+gaming_mode = []
+lowlatency_mode = []
+powersave_mode = []
+server_mode = []
 ```
 
 **`default_sched`:**
@@ -172,6 +179,8 @@ The example configuration above shows how to set custom flags for different sche
 * For `scx_pandemonium`:
     * No custom flags are defined, so the default flags for each mode will be used.
 * For `scx_flow`:
+    * No custom flags are defined, so the default flags for each mode will be used.
+* For `scx_forge`:
     * No custom flags are defined, so the default flags for each mode will be used.
 
 ### Fallback Behavior

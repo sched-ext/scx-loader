@@ -117,6 +117,7 @@ impl ScxLoader {
             "scx_cosmos",
             "scx_flash",
             "scx_flow",
+            "scx_forge",
             "scx_lavd",
             "scx_pandemonium",
             "scx_p2dq",
