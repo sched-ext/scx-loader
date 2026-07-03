@@ -277,104 +277,15 @@ fn init_default_config_entry(scx_sched: SupportedSched) -> (String, Sched) {
 mod tests {
     use crate::config::*;
 
+    /// TOML fixture mirroring the hardcoded defaults from `get_default_config`.
+    /// Lives in its own file (rather than an inline string) so it's easy to
+    /// read/edit as real TOML and doesn't bloat the test function.
+    const DEFAULT_CONFIG_TOML: &str = include_str!("../default_config.toml");
+
     #[test]
     fn test_default_config() {
-        let config_str = r#"
-default_mode = "Auto"
-
-[scheds.scx_bpfland]
-auto_mode = ["-m", "auto"]
-gaming_mode = ["-m", "all"]
-lowlatency_mode = ["-m", "performance", "-w"]
-powersave_mode = ["-s", "20000", "-m", "powersave", "-I", "100", "-t", "100"]
-server_mode = ["-s", "20000", "-S"]
-
-[scheds.scx_rusty]
-auto_mode = []
-gaming_mode = []
-lowlatency_mode = []
-powersave_mode = []
-server_mode = []
-
-[scheds.scx_lavd]
-auto_mode = ["--autopilot", "--pinned-slice-us", "500"]
-gaming_mode = ["--performance", "--pinned-slice-us", "500"]
-lowlatency_mode = ["--performance", "--pinned-slice-us", "500"]
-powersave_mode = ["--powersave", "--pinned-slice-us", "500"]
-server_mode = ["--performance", "--slice-min-us", "3000", "--slice-max-us", "10000", "--pinned-slice-us", "3000"]
-
-[scheds.scx_flash]
-auto_mode = []
-gaming_mode = []
-lowlatency_mode = []
-powersave_mode = []
-server_mode = []
-
-[scheds.scx_p2dq]
-auto_mode = ["--sched-mode", "default"]
-gaming_mode = ["--task-slice", "true", "-f", "--sched-mode", "performance"]
-lowlatency_mode = ["-y", "-f", "--task-slice", "true"]
-powersave_mode = ["--sched-mode", "efficiency"]
-server_mode = ["--keep-running"]
-
-[scheds.scx_tickless]
-auto_mode = []
-gaming_mode = ["-f", "5000", "-s", "5000"]
-lowlatency_mode = ["-f", "5000", "-s", "1000"]
-powersave_mode = ["-f", "50"]
-server_mode = ["-f", "100"]
-
-[scheds.scx_rustland]
-auto_mode = []
-gaming_mode = []
-lowlatency_mode = []
-powersave_mode = []
-server_mode = []
-
-[scheds.scx_cosmos]
-auto_mode = []
-gaming_mode = ["-s", "700"]
-lowlatency_mode = ["-s", "700", "-m", "performance", "-w"]
-powersave_mode = ["-m", "powersave"]
-server_mode = []
-
-[scheds.scx_beerland]
-auto_mode = []
-gaming_mode = []
-lowlatency_mode = []
-powersave_mode = []
-server_mode = []
-
-[scheds.scx_cake]
-auto_mode = ["--profile", "default"]
-gaming_mode = ["--profile", "gaming"]
-lowlatency_mode = ["--profile", "esports"]
-powersave_mode = ["--profile", "battery"]
-server_mode = ["--profile", "gaming"]
-
-[scheds.scx_pandemonium]
-auto_mode = []
-gaming_mode = []
-lowlatency_mode = []
-powersave_mode = []
-server_mode = []
-
-[scheds.scx_flow]
-auto_mode = []
-gaming_mode = []
-lowlatency_mode = []
-powersave_mode = []
-server_mode = []
-
-[scheds.scx_forge]
-auto_mode = []
-gaming_mode = []
-lowlatency_mode = []
-powersave_mode = []
-server_mode = []
-"#;
-
-        let parsed_config = parse_config_content(config_str).expect("Failed to parse config");
+        let parsed_config =
+            parse_config_content(DEFAULT_CONFIG_TOML).expect("Failed to parse config");
         let expected_config = get_default_config();
 
         assert_eq!(parsed_config, expected_config);
