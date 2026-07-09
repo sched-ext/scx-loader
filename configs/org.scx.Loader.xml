@@ -66,6 +66,29 @@
     <property name="DefaultMode" type="u" access="read"/>
 
     <!--
+        SchedulerModes:
+
+        Returns the scheduler modes that are meaningfully configured for the
+        given scheduler, i.e. the modes that resolve to a non-empty argument
+        list. Auto (0) is always included, since it represents the
+        scheduler's own defaults and is valid even without explicit
+        arguments.
+
+        Clients can use this to discover ahead of time which modes will
+        actually change scheduler behavior, rather than finding out only
+        after starting/switching to a mode that has no effect.
+
+        @scx_name: The name of the scheduler to query (e.g., "scx_rusty").
+        @sched_modes: An array of scheduler modes (see the SchedulerMode
+                    property for the meaning of each value) that are
+                    meaningfully configured for this scheduler.
+    -->
+    <method name="SchedulerModes">
+      <arg name="scx_name" type="s" direction="in"/>
+      <arg name="sched_modes" type="au" direction="out"/>
+    </method>
+
+    <!--
         StartScheduler:
 
         Starts the specified scheduler with the given mode.

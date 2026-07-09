@@ -16,7 +16,7 @@ use serde::Serialize;
 use crate::SchedMode;
 use crate::SupportedSched;
 
-#[derive(Debug, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub default_sched: Option<SupportedSched>,
@@ -24,7 +24,7 @@ pub struct Config {
     pub scheds: HashMap<String, Sched>,
 }
 
-#[derive(Debug, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Sched {
     pub auto_mode: Option<Vec<String>>,
     pub gaming_mode: Option<Vec<String>>,
@@ -264,6 +264,45 @@ fn get_default_scx_flags_for_mode(
     }
 }
 
+/// All scheduler modes, in a stable order used for enumeration.
+const ALL_MODES: [SchedMode; 5] = [
+    SchedMode::Auto,
+    SchedMode::Gaming,
+    SchedMode::PowerSave,
+    SchedMode::LowLatency,
+    SchedMode::Server,
+];
+
+/// Returns `true` if selecting `sched_mode` for `scx_sched` would resolve to an
+/// empty argument list, meaning the mode wouldn't actually change how the
+/// scheduler behaves (it would just run with its own built-in defaults).
+///
+/// `Auto` is never considered to be lacking args: it represents the
+/// scheduler's own defaults, so an empty argument list is expected and fine.
+#[must_use]
+pub fn mode_lacks_args(config: &Config, scx_sched: &SupportedSched, sched_mode: SchedMode) -> bool {
+    if sched_mode == SchedMode::Auto {
+        return false;
+    }
+
+    get_scx_flags_for_mode(config, scx_sched, sched_mode).is_empty()
+}
+
+/// Returns the modes that are meaningfully configured for `scx_sched`, i.e.
+/// the modes that resolve to a non-empty argument list. `Auto` is always
+/// included, since it is valid even without explicit arguments.
+///
+/// This lets clients (e.g. `scxctl`) discover ahead of time which modes will
+/// actually change scheduler behavior for a given scheduler, instead of
+/// `scx_loader` hard-rejecting "unconfigured" modes.
+#[must_use]
+pub fn get_configured_modes(config: &Config, scx_sched: &SupportedSched) -> Vec<SchedMode> {
+    ALL_MODES
+        .into_iter()
+        .filter(|&mode| !mode_lacks_args(config, scx_sched, mode))
+        .collect()
+}
+
 /// Initializes entry for config sched map
 fn init_default_config_entry(scx_sched: SupportedSched) -> (String, Sched) {
     let default_modes = get_default_sched_for_config(&scx_sched);
@@ -351,5 +390,76 @@ auto_mode = ["--help"]
         let config_str = "";
         let result = parse_config_content(config_str);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_auto_mode_never_lacks_args() {
+        let config_str = r"
+[scheds.scx_lavd]
+auto_mode = []
+";
+        let parsed_config = parse_config_content(config_str).expect("Failed to parse config");
+
+        assert!(!mode_lacks_args(
+            &parsed_config,
+            &SupportedSched::Lavd,
+            SchedMode::Auto
+        ));
+    }
+
+    #[test]
+    fn test_mode_lacks_args_when_explicitly_empty() {
+        let config_str = r"
+[scheds.scx_lavd]
+gaming_mode = []
+";
+        let parsed_config = parse_config_content(config_str).expect("Failed to parse config");
+
+        assert!(mode_lacks_args(
+            &parsed_config,
+            &SupportedSched::Lavd,
+            SchedMode::Gaming
+        ));
+    }
+
+    #[test]
+    fn test_mode_lacks_args_falls_back_to_defaults() {
+        // scx_rusty doesn't define any hardcoded mode flags, so every non-auto
+        // mode resolves to an empty argument list unless the user configures one.
+        let parsed_config = get_default_config();
+
+        assert!(mode_lacks_args(
+            &parsed_config,
+            &SupportedSched::Rusty,
+            SchedMode::Gaming
+        ));
+        // scx_lavd does define hardcoded flags for gaming mode.
+        assert!(!mode_lacks_args(
+            &parsed_config,
+            &SupportedSched::Lavd,
+            SchedMode::Gaming
+        ));
+    }
+
+    #[test]
+    fn test_get_configured_modes() {
+        let config_str = r#"
+[scheds.scx_cake]
+auto_mode = ["--profile", "default"]
+gaming_mode = []
+lowlatency_mode = ["--profile", "esports"]
+powersave_mode = ["--profile", "battery"]
+server_mode = []
+"#;
+        let parsed_config = parse_config_content(config_str).expect("Failed to parse config");
+
+        let configured_modes = get_configured_modes(&parsed_config, &SupportedSched::Cake);
+
+        // Auto is always included, LowLatency/PowerSave were explicitly given
+        // non-empty args, but Gaming/Server were explicitly emptied out.
+        assert_eq!(
+            configured_modes,
+            vec![SchedMode::Auto, SchedMode::PowerSave, SchedMode::LowLatency]
+        );
     }
 }

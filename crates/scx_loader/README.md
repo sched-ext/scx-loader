@@ -12,6 +12,9 @@
 * **`CurrentScheduler` Property:** Returns the `scx_name` of the active scheduler or "unknown" if none is running.
 * **`SchedulerMode` Property:** Provides information about the currently active scheduler's mode (profile).
 * **`SupportedSchedulers` Property:**  Lists the schedulers currently supported by `scx_loader`.
+* **`SchedulerModes` Method:** Given a `scx_name`, returns the modes that are actually configured (i.e. resolve to a non-empty argument list) for that scheduler. `Auto` is always included. Use this to check ahead of time whether a mode you're about to select will have any effect.
+
+**Note on modes without configured arguments:** Selecting a non-`Auto` mode that has no configured arguments (neither in the config file nor as a hardcoded default) is not treated as an error. `scx_loader` will start/switch/restart the scheduler as requested, using its own built-in defaults, and will log a warning noting that the requested mode had no effect. Use `SchedulerModes` beforehand if you want to avoid this situation entirely.
 
 ## Usage
 
@@ -68,6 +71,14 @@
   ```bash
   dbus-send --system --print-reply --dest=org.scx.Loader /org/scx/Loader org.freedesktop.DBus.Properties.Get string:org.scx.Loader string:SupportedSchedulers
   ```
+
+* **Get the Configured Modes for a Scheduler:**
+
+  ```bash
+  dbus-send --system --print-reply --dest=org.scx.Loader /org/scx/Loader org.scx.Loader.SchedulerModes string:scx_lavd
+  ```
+
+  (This returns the modes that actually do something for `scx_lavd`, e.g. `[0, 1, 2, 4]` if `LowLatency` has no configured arguments)
 
 **Note:** Replace the example scheduler names and arguments with the actual ones you want to use.
 

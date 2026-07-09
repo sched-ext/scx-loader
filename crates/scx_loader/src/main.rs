@@ -70,6 +70,9 @@ struct ScxLoader {
     // Store default configuration from config file
     default_sched: Option<SupportedSched>,
     default_mode: SchedMode,
+    // Full config, kept around so clients can query which modes are actually
+    // configured for a given scheduler (see `scheduler_modes`).
+    config: config::Config,
 }
 
 #[derive(Parser, Debug)]
@@ -142,6 +145,24 @@ impl ScxLoader {
     #[zbus(property)]
     fn default_mode(&self) -> SchedMode {
         self.default_mode
+    }
+
+    /// Returns the scheduler modes that are meaningfully configured for
+    /// `scx_name`, i.e. the modes that resolve to a non-empty argument list.
+    /// `Auto` is always included, since it's valid even without explicit
+    /// arguments.
+    ///
+    /// Clients can use this to discover ahead of time which modes will
+    /// actually change scheduler behavior, rather than finding out only
+    /// after starting/switching to a mode that has no effect.
+    ///
+    /// This has to stay `async`, even though it never awaits anything: zbus's
+    /// `#[interface]` macro deserializes arguments of sync methods by
+    /// reference where possible, and `SupportedSched` (unlike e.g. `&str`)
+    /// only implements `Deserialize` by value, not by reference.
+    #[allow(clippy::unused_async)]
+    async fn scheduler_modes(&self, scx_name: SupportedSched) -> Vec<SchedMode> {
+        config::get_configured_modes(&self.config, &scx_name)
     }
 
     async fn start_scheduler(
@@ -412,6 +433,7 @@ async fn main() -> Result<()> {
                 channel: channel.clone(),
                 default_sched: config.default_sched.clone(),
                 default_mode: config.default_mode.unwrap_or(SchedMode::Auto),
+                config: config.clone(),
             },
         )
         .await?;
@@ -478,6 +500,11 @@ async fn worker_loop(
 
                 // get scheduler args for the mode
                 let args = config::get_scx_flags_for_mode(&config, &scx_sched, sched_mode);
+                if config::mode_lacks_args(&config, &scx_sched, sched_mode) {
+                    log::warn!(
+                        "starting {scx_sched:?} in {sched_mode:?} mode, but no arguments are configured for this mode; scheduler will run with its own defaults and the requested mode has no effect"
+                    );
+                }
 
                 // send message with scheduler and asociated args to the runner
                 runner_tx
@@ -497,6 +524,11 @@ async fn worker_loop(
 
                 // get scheduler args for the mode
                 let args = config::get_scx_flags_for_mode(&config, &scx_sched, sched_mode);
+                if config::mode_lacks_args(&config, &scx_sched, sched_mode) {
+                    log::warn!(
+                        "switching {scx_sched:?} to {sched_mode:?} mode, but no arguments are configured for this mode; scheduler will run with its own defaults and the requested mode has no effect"
+                    );
+                }
 
                 // send message with scheduler and asociated args to the runner
                 runner_tx
@@ -520,6 +552,11 @@ async fn worker_loop(
                     args
                 } else {
                     // Use mode-based arguments
+                    if config::mode_lacks_args(&config, &scx_sched, current_mode) {
+                        log::warn!(
+                            "restarting {scx_sched:?} in {current_mode:?} mode, but no arguments are configured for this mode; scheduler will run with its own defaults and the requested mode has no effect"
+                        );
+                    }
                     config::get_scx_flags_for_mode(&config, &scx_sched, current_mode)
                 };
 
