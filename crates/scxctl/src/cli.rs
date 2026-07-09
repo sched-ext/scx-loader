@@ -57,6 +57,34 @@ pub struct SwitchArgs {
     pub args: Option<Vec<String>>,
 }
 
+#[derive(Parser, Debug)]
+pub struct HoldArgs {
+    #[arg(short, long, help = "Scheduler to hold", required = true)]
+    pub sched: String,
+    #[arg(
+        short,
+        long,
+        value_enum,
+        default_value = "auto",
+        help = "Mode to hold in"
+    )]
+    pub mode: SchedMode,
+    #[arg(
+        short,
+        long,
+        help = "Human-readable reason for the hold",
+        required = true
+    )]
+    pub reason: String,
+    #[arg(
+        short,
+        long,
+        help = "Reverse-DNS application identifier (e.g. org.gnome.Games)",
+        required = true
+    )]
+    pub app_id: String,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     #[command(about = "Get the info on the running scheduler")]
@@ -79,4 +107,16 @@ pub enum Commands {
     Restart,
     #[command(about = "Restore the default scheduler from configuration")]
     Restore,
+    #[command(about = "Place a scheduler hold and print the returned cookie")]
+    Hold {
+        #[clap(flatten)]
+        args: HoldArgs,
+    },
+    #[command(about = "Release a previously acquired scheduler hold by cookie")]
+    Release {
+        #[arg(help = "Cookie returned by the 'hold' command")]
+        cookie: u32,
+    },
+    #[command(about = "List all currently active scheduler holds")]
+    Holds,
 }

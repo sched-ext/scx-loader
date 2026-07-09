@@ -66,6 +66,15 @@
     <property name="DefaultMode" type="u" access="read"/>
 
     <!--
+        ActiveHolds:
+
+        Currently active scheduler holds, ordered oldest-first.
+        Each entry is a struct with fields:
+        (cookie: u, scheduler: s, mode: u, reason: s, app_id: s).
+    -->
+    <property name="ActiveHolds" type="a(ususs)" access="read"/>
+
+    <!--
         StartScheduler:
 
         Starts the specified scheduler with the given mode.
@@ -137,7 +146,7 @@
         RestartScheduler:
 
         Restarts the currently running scheduler with its original configuration.
-        This method will stop the currently running scheduler and then restart 
+        This method will stop the currently running scheduler and then restart
         it with the same scheduler and arguments/mode that were used originally.
         Returns an error if no scheduler is currently running.
     -->
@@ -154,5 +163,43 @@
     -->
     <method name="RestoreDefault">
     </method>
+
+    <!--
+        HoldScheduler:
+
+        Activates the requested scheduler/mode for the lifetime of the hold.
+        The pre-hold scheduler state is saved and restored when every hold
+        has been released.  Multiple concurrent holds are supported; the most
+        recently acquired hold wins (last-write-wins).
+
+        @scheduler: The name of the scheduler to hold (e.g., "scx_lavd").
+        @mode: The scheduler mode (profile) as an unsigned integer.
+               See the SchedulerMode property for details.
+        @reason: A human-readable reason string (shown in ActiveHolds).
+        @app_id: A reverse-DNS application identifier (e.g., "org.gnome.Games").
+        @cookie: An opaque handle that must be passed to ReleaseScheduler.
+    -->
+    <method name="HoldScheduler">
+      <arg name="scheduler" type="s" direction="in"/>
+      <arg name="mode" type="u" direction="in"/>
+      <arg name="reason" type="s" direction="in"/>
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="cookie" type="u" direction="out"/>
+    </method>
+
+    <!--
+        ReleaseScheduler:
+
+        Releases the hold identified by the cookie.
+        When the last hold is released the scheduler state that was active
+        before the first hold is restored.  If other holds remain, the most
+        recently acquired one becomes active.
+
+        @cookie: The value previously returned by HoldScheduler.
+    -->
+    <method name="ReleaseScheduler">
+      <arg name="cookie" type="u" direction="in"/>
+    </method>
+
   </interface>
 </node>

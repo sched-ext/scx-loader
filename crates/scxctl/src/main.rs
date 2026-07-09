@@ -148,6 +148,46 @@ fn cmd_restore(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std
     Ok(())
 }
 
+fn cmd_hold(
+    scx_loader: &LoaderClientProxyBlocking,
+    sched_name: String,
+    mode: SchedMode,
+    reason: String,
+    app_id: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let sched = validate_sched(scx_loader, sched_name);
+    let cookie = scx_loader.hold_scheduler(sched.clone(), mode, &reason, &app_id)?;
+    println!(
+        "holding {sched:?} in {mode:?} mode (reason: {reason:?}, app: {app_id:?}) → cookie {cookie}"
+    );
+    Ok(())
+}
+
+fn cmd_release(
+    scx_loader: &LoaderClientProxyBlocking,
+    cookie: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    scx_loader.release_scheduler(cookie)?;
+    println!("released hold with cookie {cookie}");
+    Ok(())
+}
+
+fn cmd_holds(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::error::Error>> {
+    let holds = scx_loader.active_holds()?;
+    if holds.is_empty() {
+        println!("no active holds");
+    } else {
+        println!("{} active hold(s):", holds.len());
+        for h in &holds {
+            println!(
+                "  cookie={} scheduler={} mode={} reason={:?} app_id={:?}",
+                h.cookie, h.scheduler, h.mode, h.reason, h.app_id
+            );
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let conn = Connection::system()?;
@@ -161,6 +201,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Stop => cmd_stop(&scx_loader)?,
         Commands::Restart => cmd_restart(&scx_loader)?,
         Commands::Restore => cmd_restore(&scx_loader)?,
+        Commands::Hold { args } => {
+            cmd_hold(&scx_loader, args.sched, args.mode, args.reason, args.app_id)?
+        }
+        Commands::Release { cookie } => cmd_release(&scx_loader, cookie)?,
+        Commands::Holds => cmd_holds(&scx_loader)?,
     }
 
     Ok(())
