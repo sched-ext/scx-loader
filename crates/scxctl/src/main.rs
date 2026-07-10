@@ -119,7 +119,7 @@ fn cmd_start(
         println!("started {sched:?} in {mode:?} mode");
     } else {
         scx_loader.start_scheduler(sched.clone(), mode)?;
-        println!("started {sched:?} with its own defaults");
+        println!("started {sched:?} (running with default scheduler arguments)");
     }
     Ok(())
 }
@@ -161,7 +161,7 @@ fn cmd_switch(
         println!("switched to {sched:?} in {mode:?} mode");
     } else {
         scx_loader.switch_scheduler(sched.clone(), mode)?;
-        println!("switched to {sched:?} with its own defaults");
+        println!("switched to {sched:?} (running with default scheduler arguments)");
     }
     Ok(())
 }
