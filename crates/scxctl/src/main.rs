@@ -56,6 +56,41 @@ fn cmd_modes(
     Ok(())
 }
 
+/// Checks whether `mode` has configured arguments for `sched`, warning the
+/// user if it doesn't, and returns whether it does.
+///
+/// `scx_loader` itself only logs the "no configured args" case server-side
+/// (e.g. to the systemd journal), which an interactive `scxctl` user would
+/// never see. This makes the same check client-side, using the
+/// `SchedulerModes` method, so the person running `scxctl start`/`switch`
+/// actually finds out that the mode they picked has no effect, instead of
+/// scxctl claiming a mode was applied when nothing about it actually changed
+/// scheduler behavior.
+fn check_mode_configured(
+    scx_loader: &LoaderClientProxyBlocking,
+    sched: &SupportedSched,
+    mode: SchedMode,
+) -> bool {
+    if mode == SchedMode::Auto {
+        return true;
+    }
+
+    // If the query itself fails, don't block the actual start/switch on it;
+    // just skip the warning and let scx_loader do what it would do anyway.
+    let Ok(configured_modes) = scx_loader.scheduler_modes(sched.clone()) else {
+        return true;
+    };
+
+    let is_configured = configured_modes.contains(&mode);
+    if !is_configured {
+        println!(
+            "{} {sched:?} has no configured arguments for {mode:?} mode; it will run with its own defaults",
+            "warning:".yellow().bold()
+        );
+    }
+    is_configured
+}
+
 fn cmd_start(
     scx_loader: &LoaderClientProxyBlocking,
     sched_name: String,
@@ -79,9 +114,12 @@ fn cmd_start(
     if let Some(args) = args {
         scx_loader.start_scheduler_with_args(sched.clone(), &args.clone())?;
         println!("started {sched:?} with arguments \"{}\"", args.join(" "));
-    } else {
+    } else if check_mode_configured(scx_loader, &sched, mode) {
         scx_loader.start_scheduler(sched.clone(), mode)?;
         println!("started {sched:?} in {mode:?} mode");
+    } else {
+        scx_loader.start_scheduler(sched.clone(), mode)?;
+        println!("started {sched:?} with its own defaults");
     }
     Ok(())
 }
@@ -118,9 +156,12 @@ fn cmd_switch(
             "switched to {sched:?} with arguments \"{}\"",
             args.join(" ")
         );
-    } else {
+    } else if check_mode_configured(scx_loader, &sched, mode) {
         scx_loader.switch_scheduler(sched.clone(), mode)?;
         println!("switched to {sched:?} in {mode:?} mode");
+    } else {
+        scx_loader.switch_scheduler(sched.clone(), mode)?;
+        println!("switched to {sched:?} with its own defaults");
     }
     Ok(())
 }
