@@ -33,6 +33,7 @@ Usage: scxctl <COMMAND>
 Commands:
   get      Get the current scheduler and mode
   list     List all supported schedulers
+  modes    List the modes that are actually configured for a scheduler
   start    Start a scheduler in a mode or with arguments
   switch   Switch schedulers or modes, optionally with arguments
   stop     Stop the current scheduler
@@ -96,4 +97,10 @@ Switch to flash and increase the maximum time slice from 4ms (default) to 20ms
 
 ```
 scxctl switch -s flash -a="-s,20000"
+```
+
+Check scheduler modes
+
+```
+scxctl modes -s lavd
 ```
