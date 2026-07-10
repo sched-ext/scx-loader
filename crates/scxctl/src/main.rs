@@ -45,6 +45,17 @@ fn cmd_list(scx_loader: &LoaderClientProxyBlocking) {
     }
 }
 
+fn cmd_modes(
+    scx_loader: &LoaderClientProxyBlocking,
+    sched_name: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let sched: SupportedSched = validate_sched(scx_loader, sched_name);
+    let modes: Vec<SchedMode> = scx_loader.scheduler_modes(sched.clone())?;
+    println!("modes configured for {sched:?}: {modes:?}");
+    println!("(any mode not listed here has no configured arguments and would just run {sched:?} with its own defaults)");
+    Ok(())
+}
+
 fn cmd_start(
     scx_loader: &LoaderClientProxyBlocking,
     sched_name: String,
@@ -156,6 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Get => cmd_get(&scx_loader)?,
         Commands::List => cmd_list(&scx_loader),
+        Commands::Modes { args } => cmd_modes(&scx_loader, args.sched)?,
         Commands::Start { args } => cmd_start(&scx_loader, args.sched, args.mode, args.args)?,
         Commands::Switch { args } => cmd_switch(&scx_loader, args.sched, args.mode, args.args)?,
         Commands::Stop => cmd_stop(&scx_loader)?,

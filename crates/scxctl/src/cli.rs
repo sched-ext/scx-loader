@@ -57,12 +57,23 @@ pub struct SwitchArgs {
     pub args: Option<Vec<String>>,
 }
 
+#[derive(Parser, Debug)]
+pub struct ModesArgs {
+    #[arg(short, long, help = "Scheduler to query", required = true)]
+    pub sched: String,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     #[command(about = "Get the info on the running scheduler")]
     Get,
     #[command(about = "List all supported schedulers")]
     List,
+    #[command(about = "List the modes that are actually configured for a scheduler")]
+    Modes {
+        #[clap(flatten)]
+        args: ModesArgs,
+    },
     #[command(about = "Start a scheduler in a mode or with arguments")]
     Start {
         #[clap(flatten)]
