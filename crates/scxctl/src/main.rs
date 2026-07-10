@@ -142,12 +142,26 @@ fn cmd_switch(
         exit(1);
     }
 
+    let current_sched_name = scx_loader.current_scheduler().unwrap();
     let sched: SupportedSched = match sched_name {
         Some(sched_name) => validate_sched(scx_loader, sched_name),
-        None => SupportedSched::try_from(scx_loader.current_scheduler().unwrap().as_str()).unwrap(),
+        None => SupportedSched::try_from(current_sched_name.as_str()).unwrap(),
     };
+
+    // Whether this switch is actually changing to a different scheduler, as
+    // opposed to just changing the mode of the one already running.
+    let target_sched_name: &str = sched.clone().into();
+    let switching_scheduler = target_sched_name != current_sched_name;
+
     let mode: SchedMode = match mode_name {
         Some(mode_name) => mode_name,
+        // Only inherit the currently active mode when switching within the
+        // same scheduler. Switching to a *different* scheduler without an
+        // explicit -m should start it fresh in Auto mode, rather than
+        // silently carrying over a mode picked for the scheduler being
+        // switched away from (which this new scheduler may not even have
+        // configured).
+        None if switching_scheduler => SchedMode::Auto,
         None => scx_loader.scheduler_mode().unwrap(),
     };
     if let Some(args) = args {
