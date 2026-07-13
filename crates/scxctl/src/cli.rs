@@ -61,6 +61,11 @@ pub struct SwitchArgs {
 pub struct ModesArgs {
     #[arg(short, long, help = "Scheduler to query", required = true)]
     pub sched: String,
+    #[arg(
+        long,
+        help = "Show the resolved arguments for every mode, not just which ones are configured"
+    )]
+    pub show: bool,
 }
 
 #[derive(Subcommand, Debug)]
