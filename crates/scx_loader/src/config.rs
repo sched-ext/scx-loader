@@ -303,6 +303,26 @@ pub fn get_configured_modes(config: &Config, scx_sched: &SupportedSched) -> Vec<
         .collect()
 }
 
+/// Returns the resolved arguments for every mode of `scx_sched`, in a stable
+/// order. Modes with no configured arguments come back with an empty `Vec`,
+/// meaning the scheduler would just run with its own built-in defaults for
+/// that mode.
+///
+/// Unlike `get_configured_modes`, this includes every mode (not just the
+/// ones that resolve to non-empty args) along with its actual arguments, so
+/// callers (e.g. `scxctl modes --show`) can display the exact configuration
+/// instead of just which modes are configured.
+#[must_use]
+pub fn get_all_mode_args(
+    config: &Config,
+    scx_sched: &SupportedSched,
+) -> Vec<(SchedMode, Vec<String>)> {
+    ALL_MODES
+        .into_iter()
+        .map(|mode| (mode, get_scx_flags_for_mode(config, scx_sched, mode)))
+        .collect()
+}
+
 /// Initializes entry for config sched map
 fn init_default_config_entry(scx_sched: SupportedSched) -> (String, Sched) {
     let default_modes = get_default_sched_for_config(&scx_sched);
@@ -460,6 +480,46 @@ server_mode = []
         assert_eq!(
             configured_modes,
             vec![SchedMode::Auto, SchedMode::PowerSave, SchedMode::LowLatency]
+        );
+    }
+
+    #[test]
+    fn test_get_all_mode_args() {
+        let config_str = r#"
+[scheds.scx_cake]
+auto_mode = ["--profile", "default"]
+gaming_mode = []
+powersave_mode = ["--profile", "battery"]
+lowlatency_mode = ["--profile", "esports"]
+server_mode = ["--profile", "gaming"]
+"#;
+        let parsed_config = parse_config_content(config_str).expect("Failed to parse config");
+
+        let mode_args = get_all_mode_args(&parsed_config, &SupportedSched::Cake);
+
+        // Every mode is present, in a stable order, with its actual
+        // resolved arguments (explicit, hardcoded-default, or empty).
+        assert_eq!(
+            mode_args,
+            vec![
+                (
+                    SchedMode::Auto,
+                    vec!["--profile".to_owned(), "default".to_owned()]
+                ),
+                (SchedMode::Gaming, vec![]),
+                (
+                    SchedMode::PowerSave,
+                    vec!["--profile".to_owned(), "battery".to_owned()]
+                ),
+                (
+                    SchedMode::LowLatency,
+                    vec!["--profile".to_owned(), "esports".to_owned()]
+                ),
+                (
+                    SchedMode::Server,
+                    vec!["--profile".to_owned(), "gaming".to_owned()]
+                ),
+            ]
         );
     }
 }

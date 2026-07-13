@@ -165,6 +165,21 @@ impl ScxLoader {
         config::get_configured_modes(&self.config, &scx_name)
     }
 
+    /// Returns the resolved arguments for every mode of `scx_name`, in a
+    /// stable order. A mode with no configured arguments comes back with an
+    /// empty list, meaning it would just run `scx_name` with its own
+    /// built-in defaults.
+    ///
+    /// Unlike `SchedulerModes`, this returns every mode together with its
+    /// actual arguments, so clients can show the exact configuration
+    /// instead of just which modes are configured.
+    ///
+    /// See `scheduler_modes` for why this has to stay `async`.
+    #[allow(clippy::unused_async)]
+    async fn scheduler_mode_args(&self, scx_name: SupportedSched) -> Vec<(SchedMode, Vec<String>)> {
+        config::get_all_mode_args(&self.config, &scx_name)
+    }
+
     async fn start_scheduler(
         &mut self,
         #[zbus(connection)] conn: &Connection,

@@ -89,6 +89,28 @@
     </method>
 
     <!--
+        SchedulerModeArgs:
+
+        Returns the resolved arguments for every mode of the given
+        scheduler, in a stable order. A mode with no configured arguments
+        comes back with an empty array, meaning it would just run the
+        scheduler with its own built-in defaults for that mode.
+
+        Unlike SchedulerModes, this returns every mode together with its
+        actual arguments, so clients can show the exact configuration
+        instead of just which modes are configured.
+
+        @scx_name: The name of the scheduler to query (e.g., "scx_rusty").
+        @mode_args: An array of (mode, arguments) pairs, one per scheduler
+                    mode (see the SchedulerMode property for the meaning of
+                    each mode value).
+    -->
+    <method name="SchedulerModeArgs">
+      <arg name="scx_name" type="s" direction="in"/>
+      <arg name="mode_args" type="a(uas)" direction="out"/>
+    </method>
+
+    <!--
         StartScheduler:
 
         Starts the specified scheduler with the given mode.

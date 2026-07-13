@@ -93,4 +93,13 @@ pub trait LoaderClient {
     /// `Auto` is always included, since it represents the scheduler's own
     /// defaults and is valid even without explicit arguments.
     fn scheduler_modes(&self, scx_name: SupportedSched) -> zbus::Result<Vec<SchedMode>>;
+
+    /// Returns the resolved arguments for every mode of `scx_name`, in a
+    /// stable order. A mode with no configured arguments comes back with an
+    /// empty list, meaning it would just run `scx_name` with its own
+    /// built-in defaults.
+    fn scheduler_mode_args(
+        &self,
+        scx_name: SupportedSched,
+    ) -> zbus::Result<Vec<(SchedMode, Vec<String>)>>;
 }
