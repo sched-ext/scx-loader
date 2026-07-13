@@ -65,7 +65,7 @@ pub struct ModesArgs {
         long,
         help = "Show the resolved arguments for every mode, not just which ones are configured"
     )]
-    pub show: bool,
+    pub show_args: bool,
 }
 
 #[derive(Subcommand, Debug)]

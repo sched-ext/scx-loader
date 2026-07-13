@@ -48,11 +48,11 @@ fn cmd_list(scx_loader: &LoaderClientProxyBlocking) {
 fn cmd_modes(
     scx_loader: &LoaderClientProxyBlocking,
     sched_name: String,
-    show: bool,
+    show_args: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sched: SupportedSched = validate_sched(scx_loader, sched_name);
 
-    if show {
+    if show_args {
         let mode_args: Vec<(SchedMode, Vec<String>)> =
             scx_loader.scheduler_mode_args(sched.clone())?;
         println!("configuration for {sched:?}:");
@@ -66,7 +66,7 @@ fn cmd_modes(
     } else {
         let modes: Vec<SchedMode> = scx_loader.scheduler_modes(sched.clone())?;
         println!("modes configured for {sched:?}: {modes:?}");
-        println!("(unlisted modes run with {sched:?}'s own defaults; use --show to see them all)");
+        println!("(unlisted modes run with {sched:?}'s own defaults; use --show-args to see them all)");
     }
     Ok(())
 }
@@ -237,7 +237,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Get => cmd_get(&scx_loader)?,
         Commands::List => cmd_list(&scx_loader),
-        Commands::Modes { args } => cmd_modes(&scx_loader, args.sched, args.show)?,
+        Commands::Modes { args } => cmd_modes(&scx_loader, args.sched, args.show_args)?,
         Commands::Start { args } => cmd_start(&scx_loader, args.sched, args.mode, args.args)?,
         Commands::Switch { args } => cmd_switch(&scx_loader, args.sched, args.mode, args.args)?,
         Commands::Stop => cmd_stop(&scx_loader)?,
