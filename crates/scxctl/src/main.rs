@@ -66,7 +66,9 @@ fn cmd_modes(
     } else {
         let modes: Vec<SchedMode> = scx_loader.scheduler_modes(sched.clone())?;
         println!("modes configured for {sched:?}: {modes:?}");
-        println!("(unlisted modes run with {sched:?}'s own defaults; use --show-args to see them all)");
+        println!(
+            "(unlisted modes run with {sched:?}'s own defaults; use --show-args to see them all)"
+        );
     }
     Ok(())
 }
