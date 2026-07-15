@@ -278,7 +278,7 @@ fn validate_sched(scx_loader: &LoaderClientProxyBlocking, sched: String) -> Supp
         println!(
             "{} invalid value '{}' for '{}'",
             "error:".red().bold(),
-            &sched.yellow(),
+            sched.yellow(),
             "--sched <SCHED>".bold()
         );
         println!("supported schedulers: {supported_scheds:?}");
