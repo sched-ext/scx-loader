@@ -104,3 +104,9 @@ Check scheduler modes
 ```
 scxctl modes -s lavd
 ```
+
+Show the resolved arguments for every mode
+
+```
+scxctl modes -s lavd --show-args
+```
