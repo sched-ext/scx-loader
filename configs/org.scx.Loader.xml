@@ -75,8 +75,8 @@
         arguments.
 
         Clients can use this to discover ahead of time which modes will
-        actually change scheduler behavior, rather than finding out only
-        after starting/switching to a mode that has no effect.
+        have mode-specific arguments applied, rather than finding out only
+        after starting/switching that no such arguments are configured.
 
         @scx_name: The name of the scheduler to query (e.g., "scx_rusty").
         @sched_modes: An array of scheduler modes (see the SchedulerMode

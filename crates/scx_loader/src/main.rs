@@ -153,8 +153,8 @@ impl ScxLoader {
     /// arguments.
     ///
     /// Clients can use this to discover ahead of time which modes will
-    /// actually change scheduler behavior, rather than finding out only
-    /// after starting/switching to a mode that has no effect.
+    /// have mode-specific arguments applied, rather than finding out only
+    /// after starting/switching that no such arguments are configured.
     ///
     /// This has to stay `async`, even though it never awaits anything: zbus's
     /// `#[interface]` macro deserializes arguments of sync methods by
@@ -517,7 +517,7 @@ async fn worker_loop(
                 let args = config::get_scx_flags_for_mode(&config, &scx_sched, sched_mode);
                 if config::mode_lacks_args(&config, &scx_sched, sched_mode) {
                     log::warn!(
-                        "starting {scx_sched:?} in {sched_mode:?} mode, but no arguments are configured for this mode; scheduler will run with its own defaults and the requested mode has no effect"
+                        "starting {scx_sched:?} in {sched_mode:?} mode, but no mode-specific arguments are configured; the scheduler will run with its own defaults"
                     );
                 }
 
@@ -541,7 +541,7 @@ async fn worker_loop(
                 let args = config::get_scx_flags_for_mode(&config, &scx_sched, sched_mode);
                 if config::mode_lacks_args(&config, &scx_sched, sched_mode) {
                     log::warn!(
-                        "switching {scx_sched:?} to {sched_mode:?} mode, but no arguments are configured for this mode; scheduler will run with its own defaults and the requested mode has no effect"
+                        "switching {scx_sched:?} to {sched_mode:?} mode, but no mode-specific arguments are configured; the scheduler will run with its own defaults"
                     );
                 }
 
@@ -569,7 +569,7 @@ async fn worker_loop(
                     // Use mode-based arguments
                     if config::mode_lacks_args(&config, &scx_sched, current_mode) {
                         log::warn!(
-                            "restarting {scx_sched:?} in {current_mode:?} mode, but no arguments are configured for this mode; scheduler will run with its own defaults and the requested mode has no effect"
+                            "restarting {scx_sched:?} in {current_mode:?} mode, but no mode-specific arguments are configured; the scheduler will run with its own defaults"
                         );
                     }
                     config::get_scx_flags_for_mode(&config, &scx_sched, current_mode)
