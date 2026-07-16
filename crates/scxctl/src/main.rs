@@ -58,7 +58,11 @@ fn cmd_modes(
         println!("configuration for {sched:?}:");
         for (mode, args) in mode_args {
             if args.is_empty() {
-                println!("  {mode:?}: (not configured, runs with {sched:?}'s own defaults)");
+                if mode == SchedMode::Auto {
+                    println!("  {mode:?}: (uses {sched:?}'s own defaults)");
+                } else {
+                    println!("  {mode:?}: (not configured, uses {sched:?}'s own defaults)");
+                }
             } else {
                 println!("  {mode:?}: {}", args.join(" "));
             }
@@ -80,9 +84,9 @@ fn cmd_modes(
 /// (e.g. to the systemd journal), which an interactive `scxctl` user would
 /// never see. This makes the same check client-side, using the
 /// `SchedulerModes` method, so the person running `scxctl start`/`switch`
-/// actually finds out that the mode they picked has no effect, instead of
-/// scxctl claiming a mode was applied when nothing about it actually changed
-/// scheduler behavior.
+/// actually finds out that no mode-specific arguments will be applied,
+/// instead of scxctl implying that the selected mode has a dedicated
+/// configuration when it does not.
 fn check_mode_configured(
     scx_loader: &LoaderClientProxyBlocking,
     sched: &SupportedSched,
@@ -100,7 +104,7 @@ fn check_mode_configured(
 
     let is_configured = configured_modes.contains(&mode);
     if !is_configured {
-        println!(
+        eprintln!(
             "{} {sched:?} has no configured arguments for {mode:?} mode; it will run with its own defaults",
             "warning:".yellow().bold()
         );
@@ -131,14 +135,28 @@ fn cmd_start(
     if let Some(args) = args {
         scx_loader.start_scheduler_with_args(sched.clone(), &args.clone())?;
         println!("started {sched:?} with arguments \"{}\"", args.join(" "));
-    } else if check_mode_configured(scx_loader, &sched, mode) {
-        scx_loader.start_scheduler(sched.clone(), mode)?;
-        println!("started {sched:?} in {mode:?} mode");
     } else {
+        let mode_configured = check_mode_configured(scx_loader, &sched, mode);
         scx_loader.start_scheduler(sched.clone(), mode)?;
-        println!("started {sched:?} (running with default scheduler arguments)");
+        if mode_configured {
+            println!("started {sched:?} in {mode:?} mode");
+        } else {
+            println!("started {sched:?} with its own defaults");
+        }
     }
     Ok(())
+}
+
+fn resolve_switch_mode(
+    requested_mode: Option<SchedMode>,
+    current_mode: SchedMode,
+    switching_scheduler: bool,
+) -> SchedMode {
+    match requested_mode {
+        Some(mode) => mode,
+        None if switching_scheduler => SchedMode::Auto,
+        None => current_mode,
+    }
 }
 
 fn cmd_switch(
@@ -148,7 +166,8 @@ fn cmd_switch(
     args: Option<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Verify scx_loader is running a scheduler
-    if scx_loader.current_scheduler().unwrap() == "unknown" {
+    let current_sched_name = scx_loader.current_scheduler()?;
+    if current_sched_name == "unknown" {
         println!(
             "{} no scx scheduler running, use '{}' instead of '{}'",
             "error:".red().bold(),
@@ -159,40 +178,38 @@ fn cmd_switch(
         exit(1);
     }
 
-    let current_sched_name = scx_loader.current_scheduler().unwrap();
+    let current_sched = SupportedSched::try_from(current_sched_name.as_str())?;
     let sched: SupportedSched = match sched_name {
         Some(sched_name) => validate_sched(scx_loader, sched_name),
-        None => SupportedSched::try_from(current_sched_name.as_str()).unwrap(),
+        None => current_sched.clone(),
     };
 
     // Whether this switch is actually changing to a different scheduler, as
     // opposed to just changing the mode of the one already running.
-    let target_sched_name: &str = sched.clone().into();
-    let switching_scheduler = target_sched_name != current_sched_name;
+    let switching_scheduler = sched != current_sched;
 
-    let mode: SchedMode = match mode_name {
-        Some(mode_name) => mode_name,
-        // Only inherit the currently active mode when switching within the
-        // same scheduler. Switching to a *different* scheduler without an
-        // explicit -m should start it fresh in Auto mode, rather than
-        // silently carrying over a mode picked for the scheduler being
-        // switched away from (which this new scheduler may not even have
-        // configured).
-        None if switching_scheduler => SchedMode::Auto,
-        None => scx_loader.scheduler_mode().unwrap(),
+    // The current mode is only needed when neither a mode nor a different
+    // scheduler was selected. Avoid an unnecessary D-Bus call otherwise.
+    let current_mode = if mode_name.is_none() && !switching_scheduler {
+        scx_loader.scheduler_mode()?
+    } else {
+        SchedMode::Auto
     };
+    let mode = resolve_switch_mode(mode_name, current_mode, switching_scheduler);
     if let Some(args) = args {
         scx_loader.switch_scheduler_with_args(sched.clone(), &args.clone())?;
         println!(
             "switched to {sched:?} with arguments \"{}\"",
             args.join(" ")
         );
-    } else if check_mode_configured(scx_loader, &sched, mode) {
-        scx_loader.switch_scheduler(sched.clone(), mode)?;
-        println!("switched to {sched:?} in {mode:?} mode");
     } else {
+        let mode_configured = check_mode_configured(scx_loader, &sched, mode);
         scx_loader.switch_scheduler(sched.clone(), mode)?;
-        println!("switched to {sched:?} (running with default scheduler arguments)");
+        if mode_configured {
+            println!("switched to {sched:?} in {mode:?} mode");
+        } else {
+            println!("switched to {sched:?} with its own defaults");
+        }
     }
     Ok(())
 }
@@ -289,4 +306,33 @@ fn validate_sched(scx_loader: &LoaderClientProxyBlocking, sched: String) -> Supp
     }
 
     SupportedSched::try_from(ensure_scx_prefix(sched).as_str()).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn switch_to_different_scheduler_defaults_to_auto() {
+        assert_eq!(
+            resolve_switch_mode(None, SchedMode::Gaming, true),
+            SchedMode::Auto
+        );
+    }
+
+    #[test]
+    fn switch_within_same_scheduler_keeps_current_mode() {
+        assert_eq!(
+            resolve_switch_mode(None, SchedMode::Gaming, false),
+            SchedMode::Gaming
+        );
+    }
+
+    #[test]
+    fn explicit_switch_mode_always_wins() {
+        assert_eq!(
+            resolve_switch_mode(Some(SchedMode::PowerSave), SchedMode::Gaming, true),
+            SchedMode::PowerSave
+        );
+    }
 }
