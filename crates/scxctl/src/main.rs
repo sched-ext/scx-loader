@@ -146,7 +146,12 @@ fn cmd_start(
 /// Prints the outcome of a start/switch operation, noting whether the
 /// requested mode actually had configured arguments applied or the
 /// scheduler fell back to its own defaults.
-fn report_mode_result(action: &str, sched: &SupportedSched, mode: SchedMode, mode_configured: bool) {
+fn report_mode_result(
+    action: &str,
+    sched: &SupportedSched,
+    mode: SchedMode,
+    mode_configured: bool,
+) {
     if mode_configured {
         println!("{action} {sched:?} in {mode:?} mode");
     } else {
@@ -316,9 +321,13 @@ mod tests {
 
     #[test]
     fn switch_to_different_scheduler_defaults_to_auto() {
-        let mode = resolve_switch_mode(None, true, || -> Result<SchedMode, Box<dyn std::error::Error>> {
-            panic!("current mode should not be fetched when switching scheduler")
-        })
+        let mode = resolve_switch_mode(
+            None,
+            true,
+            || -> Result<SchedMode, Box<dyn std::error::Error>> {
+                panic!("current mode should not be fetched when switching scheduler")
+            },
+        )
         .unwrap();
         assert_eq!(mode, SchedMode::Auto);
     }
