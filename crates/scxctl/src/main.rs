@@ -138,24 +138,35 @@ fn cmd_start(
     } else {
         let mode_configured = check_mode_configured(scx_loader, &sched, mode);
         scx_loader.start_scheduler(sched.clone(), mode)?;
-        if mode_configured {
-            println!("started {sched:?} in {mode:?} mode");
-        } else {
-            println!("started {sched:?} with its own defaults");
-        }
+        report_mode_result("started", &sched, mode, mode_configured);
     }
     Ok(())
 }
 
-fn resolve_switch_mode(
+/// Prints the outcome of a start/switch operation, noting whether the
+/// requested mode actually had configured arguments applied or the
+/// scheduler fell back to its own defaults.
+fn report_mode_result(action: &str, sched: &SupportedSched, mode: SchedMode, mode_configured: bool) {
+    if mode_configured {
+        println!("{action} {sched:?} in {mode:?} mode");
+    } else {
+        println!("{action} {sched:?} with its own defaults");
+    }
+}
+
+/// Resolves which mode a `switch` should use. The current mode is fetched
+/// lazily via `fetch_current_mode` so that callers only pay for the D-Bus
+/// round-trip when it's actually needed (no explicit mode was requested and
+/// we're not switching to a different scheduler).
+fn resolve_switch_mode<E>(
     requested_mode: Option<SchedMode>,
-    current_mode: SchedMode,
     switching_scheduler: bool,
-) -> SchedMode {
+    fetch_current_mode: impl FnOnce() -> Result<SchedMode, E>,
+) -> Result<SchedMode, E> {
     match requested_mode {
-        Some(mode) => mode,
-        None if switching_scheduler => SchedMode::Auto,
-        None => current_mode,
+        Some(mode) => Ok(mode),
+        None if switching_scheduler => Ok(SchedMode::Auto),
+        None => fetch_current_mode(),
     }
 }
 
@@ -188,14 +199,9 @@ fn cmd_switch(
     // opposed to just changing the mode of the one already running.
     let switching_scheduler = sched != current_sched;
 
-    // The current mode is only needed when neither a mode nor a different
-    // scheduler was selected. Avoid an unnecessary D-Bus call otherwise.
-    let current_mode = if mode_name.is_none() && !switching_scheduler {
-        scx_loader.scheduler_mode()?
-    } else {
-        SchedMode::Auto
-    };
-    let mode = resolve_switch_mode(mode_name, current_mode, switching_scheduler);
+    let mode = resolve_switch_mode(mode_name, switching_scheduler, || {
+        scx_loader.scheduler_mode()
+    })?;
     if let Some(args) = args {
         scx_loader.switch_scheduler_with_args(sched.clone(), &args.clone())?;
         println!(
@@ -205,11 +211,7 @@ fn cmd_switch(
     } else {
         let mode_configured = check_mode_configured(scx_loader, &sched, mode);
         scx_loader.switch_scheduler(sched.clone(), mode)?;
-        if mode_configured {
-            println!("switched to {sched:?} in {mode:?} mode");
-        } else {
-            println!("switched to {sched:?} with its own defaults");
-        }
+        report_mode_result("switched to", &sched, mode, mode_configured);
     }
     Ok(())
 }
@@ -314,25 +316,32 @@ mod tests {
 
     #[test]
     fn switch_to_different_scheduler_defaults_to_auto() {
-        assert_eq!(
-            resolve_switch_mode(None, SchedMode::Gaming, true),
-            SchedMode::Auto
-        );
+        let mode = resolve_switch_mode(None, true, || -> Result<SchedMode, Box<dyn std::error::Error>> {
+            panic!("current mode should not be fetched when switching scheduler")
+        })
+        .unwrap();
+        assert_eq!(mode, SchedMode::Auto);
     }
 
     #[test]
     fn switch_within_same_scheduler_keeps_current_mode() {
-        assert_eq!(
-            resolve_switch_mode(None, SchedMode::Gaming, false),
-            SchedMode::Gaming
-        );
+        let mode: SchedMode = resolve_switch_mode(None, false, || {
+            Ok::<_, Box<dyn std::error::Error>>(SchedMode::Gaming)
+        })
+        .unwrap();
+        assert_eq!(mode, SchedMode::Gaming);
     }
 
     #[test]
     fn explicit_switch_mode_always_wins() {
-        assert_eq!(
-            resolve_switch_mode(Some(SchedMode::PowerSave), SchedMode::Gaming, true),
-            SchedMode::PowerSave
-        );
+        let mode = resolve_switch_mode(
+            Some(SchedMode::PowerSave),
+            true,
+            || -> Result<SchedMode, Box<dyn std::error::Error>> {
+                panic!("current mode should not be fetched when an explicit mode is given")
+            },
+        )
+        .unwrap();
+        assert_eq!(mode, SchedMode::PowerSave);
     }
 }
