@@ -195,14 +195,20 @@ fn cmd_switch(
     }
 
     let current_sched = SupportedSched::try_from(current_sched_name.as_str())?;
-    let sched: SupportedSched = match sched_name {
-        Some(sched_name) => validate_sched(scx_loader, sched_name),
-        None => current_sched.clone(),
-    };
 
     // Whether this switch is actually changing to a different scheduler, as
-    // opposed to just changing the mode of the one already running.
-    let switching_scheduler = sched != current_sched;
+    // opposed to just changing the mode of the one already running. Resolved
+    // alongside `sched` so the `None` branch (no `-s` given) can move
+    // `current_sched` straight through instead of cloning it just to satisfy
+    // a comparison whose answer is already known to be `false`.
+    let (sched, switching_scheduler): (SupportedSched, bool) = match sched_name {
+        Some(sched_name) => {
+            let sched = validate_sched(scx_loader, sched_name);
+            let switching_scheduler = sched != current_sched;
+            (sched, switching_scheduler)
+        }
+        None => (current_sched, false),
+    };
 
     let mode = resolve_switch_mode(mode_name, switching_scheduler, || {
         scx_loader.scheduler_mode()
