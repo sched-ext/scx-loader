@@ -133,7 +133,7 @@ fn cmd_start(
     let sched: SupportedSched = validate_sched(scx_loader, sched_name);
     let mode: SchedMode = mode_name.unwrap_or(SchedMode::Auto);
     if let Some(args) = args {
-        scx_loader.start_scheduler_with_args(sched.clone(), &args.clone())?;
+        scx_loader.start_scheduler_with_args(sched.clone(), &args)?;
         println!("started {sched:?} with arguments \"{}\"", args.join(" "));
     } else {
         let mode_configured = check_mode_configured(scx_loader, &sched, mode);
@@ -208,7 +208,7 @@ fn cmd_switch(
         scx_loader.scheduler_mode()
     })?;
     if let Some(args) = args {
-        scx_loader.switch_scheduler_with_args(sched.clone(), &args.clone())?;
+        scx_loader.switch_scheduler_with_args(sched.clone(), &args)?;
         println!(
             "switched to {sched:?} with arguments \"{}\"",
             args.join(" ")
