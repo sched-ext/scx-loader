@@ -119,7 +119,8 @@ fn cmd_start(
     args: Option<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Verify scx_loader is not running a scheduler
-    if scx_loader.current_scheduler().unwrap() != "unknown" {
+    let current_scheduler = scx_loader.current_scheduler()?;
+    if current_scheduler != "unknown" {
         println!(
             "{} scx scheduler already running, use '{}' instead of '{}'",
             "error:".red().bold(),
