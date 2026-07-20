@@ -130,13 +130,13 @@ fn cmd_start(
     // Verify scx_loader is not running a scheduler
     let current_scheduler = scx_loader.current_scheduler()?;
     if current_scheduler != "unknown" {
-        println!(
+        eprintln!(
             "{} scx scheduler already running, use '{}' instead of '{}'",
             "error:".red().bold(),
             "switch".bold(),
             "start".bold()
         );
-        println!("\nFor more information, try '{}'", "--help".bold());
+        eprintln!("\nFor more information, try '{}'", "--help".bold());
         exit(1);
     }
 
@@ -194,13 +194,13 @@ fn cmd_switch(
     // Verify scx_loader is running a scheduler
     let current_sched_name = scx_loader.current_scheduler()?;
     if current_sched_name == "unknown" {
-        println!(
+        eprintln!(
             "{} no scx scheduler running, use '{}' instead of '{}'",
             "error:".red().bold(),
             "start".bold(),
             "switch".bold()
         );
-        println!("\nFor more information, try '{}'", "--help".bold());
+        eprintln!("\nFor more information, try '{}'", "--help".bold());
         exit(1);
     }
 
@@ -253,8 +253,8 @@ fn cmd_restore(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std
     // Check if a default scheduler is configured
     let default_scheduler = scx_loader.default_scheduler()?;
     if default_scheduler == "unknown" {
-        println!("{} no default scheduler configured", "error:".red().bold());
-        println!(
+        eprintln!("{} no default scheduler configured", "error:".red().bold());
+        eprintln!(
             "\nSet '{}' in your config file to use this command",
             "default_sched".bold()
         );
@@ -323,14 +323,14 @@ fn validate_sched(scx_loader: &LoaderClientProxyBlocking, sched: String) -> Supp
         .map(|s| remove_scx_prefix(s))
         .collect();
     if !supported_scheds.contains(&sched) && !raw_supported_scheds.contains(&sched) {
-        println!(
+        eprintln!(
             "{} invalid value '{}' for '{}'",
             "error:".red().bold(),
             sched.yellow(),
             "--sched <SCHED>".bold()
         );
-        println!("supported schedulers: {supported_scheds:?}");
-        println!("\nFor more information, try '{}'", "--help".bold());
+        eprintln!("supported schedulers: {supported_scheds:?}");
+        eprintln!("\nFor more information, try '{}'", "--help".bold());
         exit(1);
     }
 
