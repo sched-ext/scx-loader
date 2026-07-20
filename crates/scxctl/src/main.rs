@@ -18,7 +18,8 @@ fn cmd_get(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::er
 
         if current_args.is_empty() {
             let sched_mode: SchedMode = scx_loader.scheduler_mode()?;
-            println!("running {sched:?} in {sched_mode:?} mode");
+            let mode_configured = mode_is_configured(scx_loader, &sched, sched_mode);
+            report_mode_result("running", &sched, sched_mode, mode_configured);
         } else {
             println!(
                 "running {sched:?} with arguments \"{}\"",
@@ -87,7 +88,12 @@ fn cmd_modes(
 /// actually finds out that no mode-specific arguments will be applied,
 /// instead of scxctl implying that the selected mode has a dedicated
 /// configuration when it does not.
-fn check_mode_configured(
+/// Returns whether `mode` has configured arguments for `sched`.
+///
+/// `Auto` always counts as configured (it *is* the scheduler's own
+/// defaults), and query failures count as configured too (fail-open), so
+/// callers never block or mislead on a transient D-Bus error.
+fn mode_is_configured(
     scx_loader: &LoaderClientProxyBlocking,
     sched: &SupportedSched,
     mode: SchedMode,
@@ -95,14 +101,17 @@ fn check_mode_configured(
     if mode == SchedMode::Auto {
         return true;
     }
+    scx_loader
+        .scheduler_modes(sched.clone())
+        .map_or(true, |modes| modes.contains(&mode))
+}
 
-    // If the query itself fails, don't block the actual start/switch on it;
-    // just skip the warning and let scx_loader do what it would do anyway.
-    let Ok(configured_modes) = scx_loader.scheduler_modes(sched.clone()) else {
-        return true;
-    };
-
-    let is_configured = configured_modes.contains(&mode);
+fn check_mode_configured(
+    scx_loader: &LoaderClientProxyBlocking,
+    sched: &SupportedSched,
+    mode: SchedMode,
+) -> bool {
+    let is_configured = mode_is_configured(scx_loader, sched, mode);
     if !is_configured {
         eprintln!(
             "{} {sched:?} has no configured arguments for {mode:?} mode; it will run with its own defaults",
@@ -257,7 +266,13 @@ fn cmd_restore(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std
     // Fetch the default mode for display
     let default_mode: SchedMode = scx_loader.default_mode()?;
     let sched = SupportedSched::try_from(default_scheduler.as_str())?;
-    println!("restored default scheduler {sched:?} in {default_mode:?} mode");
+    let mode_configured = mode_is_configured(scx_loader, &sched, default_mode);
+    report_mode_result(
+        "restored default scheduler",
+        &sched,
+        default_mode,
+        mode_configured,
+    );
 
     Ok(())
 }
