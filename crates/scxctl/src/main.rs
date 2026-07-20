@@ -30,20 +30,14 @@ fn cmd_get(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-fn cmd_list(scx_loader: &LoaderClientProxyBlocking) {
-    match scx_loader.supported_schedulers() {
-        Ok(sl) => {
-            let supported_scheds = sl
-                .iter()
-                .map(|s| remove_scx_prefix(s))
-                .collect::<Vec<String>>();
-            println!("supported schedulers: {supported_scheds:?}");
-        }
-        Err(e) => {
-            eprintln!("scheduler list failed: {e}");
-            exit(1);
-        }
-    }
+fn cmd_list(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::error::Error>> {
+    let supported_scheds = scx_loader
+        .supported_schedulers()?
+        .iter()
+        .map(|s| remove_scx_prefix(s))
+        .collect::<Vec<String>>();
+    println!("supported schedulers: {supported_scheds:?}");
+    Ok(())
 }
 
 fn cmd_modes(
@@ -284,7 +278,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Get => cmd_get(&scx_loader)?,
-        Commands::List => cmd_list(&scx_loader),
+        Commands::List => cmd_list(&scx_loader)?,
         Commands::Modes { args } => cmd_modes(&scx_loader, args.sched, args.show_args)?,
         Commands::Start { args } => cmd_start(&scx_loader, args.sched, args.mode, args.args)?,
         Commands::Switch { args } => cmd_switch(&scx_loader, args.sched, args.mode, args.args)?,
