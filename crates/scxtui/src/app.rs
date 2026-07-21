@@ -2,6 +2,8 @@
 
 //! Application state and event loop.
 
+use std::io::ErrorKind;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -71,6 +73,9 @@ pub struct App {
     /// Last known height of the log viewport, written back by the UI so
     /// PgUp/PgDn can page by exactly one screen.
     pub log_page: usize,
+    /// Set by the `t` key; the event loop launches scxtop on the next
+    /// iteration, where it has access to the terminal.
+    pending_monitor: bool,
     should_quit: bool,
 }
 
@@ -92,6 +97,7 @@ impl App {
             log_lines: Vec::new(),
             log_scroll: 0,
             log_page: 20,
+            pending_monitor: false,
             should_quit: false,
         };
         app.refresh_status();
@@ -139,10 +145,45 @@ impl App {
                 }
             }
 
+            if self.pending_monitor {
+                self.pending_monitor = false;
+                self.run_monitor(&mut terminal)?;
+                last_refresh = Instant::now();
+            }
+
             if last_refresh.elapsed() >= REFRESH_EVERY {
                 self.refresh_status();
                 last_refresh = Instant::now();
             }
+        }
+        Ok(())
+    }
+
+    /// Hands the terminal over to `scxtop` and takes it back afterwards —
+    /// the lazygit-spawns-an-editor pattern. Restoring the terminal to
+    /// cooked mode first lets scxtop own the alternate screen and raw mode
+    /// itself; a fresh `ratatui::init()` afterwards re-enters ours, and the
+    /// explicit clear forces a full repaint of a screen scxtop scribbled
+    /// over. Keeping scxtop out-of-process also keeps its heavyweight BPF
+    /// dependency chain (and its root/CAP_BPF requirement) out of this
+    /// binary: scxtui itself stays an unprivileged D-Bus client.
+    fn run_monitor(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        ratatui::restore();
+        let result = Command::new("scxtop").status();
+        *terminal = ratatui::init();
+        terminal.clear()?;
+
+        match result {
+            Ok(status) if status.success() => self.info("scxtop exited"),
+            Ok(status) => self.error(&format!(
+                "scxtop exited with {status} — it needs root/CAP_BPF; \
+try running scxtui as root or granting scxtop capabilities"
+            )),
+            Err(err) if err.kind() == ErrorKind::NotFound => self.error(
+                "scxtop not found in PATH — install it (cargo install scxtop, \
+or your distro's scx tools package)",
+            ),
+            Err(err) => self.error(&format!("failed to launch scxtop: {err}")),
         }
         Ok(())
     }
@@ -158,6 +199,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('l') => self.open_logs(),
+            KeyCode::Char('t') => self.pending_monitor = true,
             KeyCode::Down | KeyCode::Char('j') => self.select_next(),
             KeyCode::Up | KeyCode::Char('k') => self.select_prev(),
             KeyCode::Tab | KeyCode::Char('m') => self.cycle_mode(1),

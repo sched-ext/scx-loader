@@ -234,7 +234,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             if caps.restore_default {
                 help.push_str(" · d restore");
             }
-            help.push_str(" · l logs · R refresh · q quit");
+            help.push_str(" · l logs · t monitor · R refresh · q quit");
             help
         }
         View::Logs => String::from(
