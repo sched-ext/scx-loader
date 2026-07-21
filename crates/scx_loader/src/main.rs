@@ -91,7 +91,7 @@ impl ScxLoader {
     fn current_scheduler(&self) -> String {
         if let Some(current_scx) = &self.current_scx {
             let current_scx: &str = current_scx.clone().into();
-            log::info!("called {current_scx:?}");
+            log::debug!("called {current_scx:?}");
             current_scx.into()
         } else {
             "unknown".into()
