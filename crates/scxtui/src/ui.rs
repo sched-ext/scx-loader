@@ -132,6 +132,9 @@ fn draw_status_panel(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     lines.push(Line::default());
+    draw_kernel_section(app, &mut lines);
+
+    lines.push(Line::default());
     lines.push(Line::from(vec![
         Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(
@@ -205,6 +208,68 @@ fn draw_logs(frame: &mut Frame, app: &mut App, area: Rect) {
             .title_style(Style::default().add_modifier(Modifier::BOLD)),
     );
     frame.render_widget(panel, area);
+}
+
+/// The kernel-truth section: what sched_ext itself reports, plus soft
+/// warnings whenever it disagrees with what the loader claims. The loader
+/// only knows about schedulers it started; the kernel knows what is
+/// actually attached.
+fn draw_kernel_section(app: &App, lines: &mut Vec<Line>) {
+    let Some(kernel) = &app.kernel else {
+        lines.push(kv(
+            "Kernel",
+            "sched_ext not available in this kernel",
+            Color::DarkGray,
+        ));
+        return;
+    };
+
+    let ops_suffix = kernel
+        .ops
+        .as_deref()
+        .map(|ops| format!(" · ops: {ops}"))
+        .unwrap_or_default();
+    let color = if kernel.enabled() {
+        Color::Green
+    } else {
+        Color::White
+    };
+    lines.push(kv(
+        "Kernel",
+        &format!("sched_ext {}{}", kernel.state, ops_suffix),
+        color,
+    ));
+
+    let loader_current = app
+        .status
+        .as_ref()
+        .and_then(|status| status.current.as_deref());
+
+    let warning = match (loader_current, kernel.enabled()) {
+        // Loader thinks nothing runs, kernel disagrees: something was
+        // started behind the loader's back (scx.service, a manual run).
+        (None, true) => Some("a scheduler is attached outside of scx_loader's control".to_owned()),
+        // Loader thinks a scheduler runs, kernel disagrees: it crashed or
+        // was ejected (watchdog) without the loader noticing yet.
+        (Some(sched), false) => Some(format!(
+            "loader reports {sched}, but the kernel shows no attached scheduler"
+        )),
+        // Both agree something runs — but is it the same something?
+        (Some(sched), true) if !kernel.matches(sched) => {
+            let ops = kernel.ops.as_deref().unwrap_or("?");
+            Some(format!(
+                "loader reports {sched}, but the kernel ops name is \"{ops}\""
+            ))
+        }
+        _ => None,
+    };
+
+    if let Some(text) = warning {
+        lines.push(Line::from(Span::styled(
+            format!("  ⚠ {text}"),
+            Style::default().fg(Color::Yellow),
+        )));
+    }
 }
 
 fn priority_style(priority: u8) -> Style {

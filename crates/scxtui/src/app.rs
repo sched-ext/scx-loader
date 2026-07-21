@@ -12,6 +12,7 @@ use ratatui::DefaultTerminal;
 use scx_loader::SchedMode;
 
 use crate::backend::{Capabilities, SchedulerBackend, Status};
+use crate::kernel::{self, KernelState};
 use crate::logs::{self, LogLine};
 use crate::ui;
 
@@ -56,6 +57,9 @@ pub struct App {
     pub selected: usize,
     pub mode_idx: usize,
     pub status: Option<Status>,
+    /// The kernel's own view of sched_ext, refreshed alongside `status`.
+    /// `None` = kernel without sched_ext support.
+    pub kernel: Option<KernelState>,
     /// Configured modes for the currently selected scheduler.
     pub configured_modes: Vec<SchedMode>,
     pub message: Option<Message>,
@@ -88,6 +92,7 @@ impl App {
             selected: 0,
             mode_idx: 0,
             status: None,
+            kernel: None,
             configured_modes: Vec::new(),
             message: None,
             last_action: None,
@@ -365,6 +370,7 @@ or your distro's scx tools package)",
             Ok(status) => self.status = Some(status),
             Err(err) => self.error(&format!("status query failed: {err:#}")),
         }
+        self.kernel = kernel::read();
     }
 
     fn refresh_modes(&mut self) {

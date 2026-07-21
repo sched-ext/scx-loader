@@ -2,6 +2,7 @@
 
 mod app;
 mod backend;
+mod kernel;
 mod logs;
 mod ui;
 
