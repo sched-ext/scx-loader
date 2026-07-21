@@ -10,6 +10,7 @@ use ratatui::DefaultTerminal;
 use scx_loader::SchedMode;
 
 use crate::backend::{Capabilities, SchedulerBackend, Status};
+use crate::logs::{self, LogLine};
 use crate::ui;
 
 /// All modes, in the cycling order used by the mode selector.
@@ -35,6 +36,13 @@ const REFRESH_EVERY: Duration = Duration::from_secs(5);
 /// without this, holding `r` would fire one restart per repeat.
 const ACTION_DEBOUNCE: Duration = Duration::from_millis(500);
 
+/// Which screen is currently shown.
+#[derive(Clone, Copy, PartialEq)]
+pub enum View {
+    Schedulers,
+    Logs,
+}
+
 pub struct Message {
     pub text: String,
     pub is_error: bool,
@@ -51,6 +59,18 @@ pub struct App {
     pub message: Option<Message>,
     /// Timestamp of the last scheduler-affecting action, for debouncing.
     last_action: Option<Instant>,
+    pub view: View,
+    /// Index into [`logs::UNITS`].
+    pub log_unit: usize,
+    /// `false` = current boot, `true` = previous boot (`journalctl -b -1`).
+    pub log_previous_boot: bool,
+    /// Flattened journal lines, oldest first.
+    pub log_lines: Vec<LogLine>,
+    /// Scroll offset counted from the bottom; 0 sticks to the newest line.
+    pub log_scroll: usize,
+    /// Last known height of the log viewport, written back by the UI so
+    /// PgUp/PgDn can page by exactly one screen.
+    pub log_page: usize,
     should_quit: bool,
 }
 
@@ -66,6 +86,12 @@ impl App {
             configured_modes: Vec::new(),
             message: None,
             last_action: None,
+            view: View::Schedulers,
+            log_unit: 0,
+            log_previous_boot: false,
+            log_lines: Vec::new(),
+            log_scroll: 0,
+            log_page: 20,
             should_quit: false,
         };
         app.refresh_status();
@@ -122,8 +148,16 @@ impl App {
     }
 
     fn on_key(&mut self, key: KeyEvent) {
+        match self.view {
+            View::Schedulers => self.on_key_schedulers(key),
+            View::Logs => self.on_key_logs(key),
+        }
+    }
+
+    fn on_key_schedulers(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('l') => self.open_logs(),
             KeyCode::Down | KeyCode::Char('j') => self.select_next(),
             KeyCode::Up | KeyCode::Char('k') => self.select_prev(),
             KeyCode::Tab | KeyCode::Char('m') => self.cycle_mode(1),
@@ -155,6 +189,59 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn on_key_logs(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Esc | KeyCode::Char('l') => self.view = View::Schedulers,
+            KeyCode::Up | KeyCode::Char('k') => self.log_scroll_by(1),
+            KeyCode::Down | KeyCode::Char('j') => self.log_scroll_by(-1),
+            KeyCode::PageUp => self.log_scroll_by(self.log_page as isize),
+            KeyCode::PageDown => self.log_scroll_by(-(self.log_page as isize)),
+            KeyCode::Char('g') => self.log_scroll = usize::MAX, // clamped by the UI
+            KeyCode::Char('G') => self.log_scroll = 0,
+            KeyCode::Char('b') => {
+                self.log_previous_boot = !self.log_previous_boot;
+                self.reload_logs();
+            }
+            KeyCode::Char('u') => {
+                self.log_unit = (self.log_unit + 1) % logs::UNITS.len();
+                self.reload_logs();
+            }
+            KeyCode::Char('R') => self.reload_logs(),
+            _ => {}
+        }
+    }
+
+    fn open_logs(&mut self) {
+        self.view = View::Logs;
+        self.reload_logs();
+    }
+
+    fn reload_logs(&mut self) {
+        let unit = logs::UNITS[self.log_unit];
+        match logs::fetch(unit, self.log_previous_boot) {
+            Ok(lines) => {
+                let boot = if self.log_previous_boot { "-1" } else { "0" };
+                self.info(&format!(
+                    "loaded {} lines from {unit} (boot {boot})",
+                    lines.len()
+                ));
+                self.log_lines = lines;
+                self.log_scroll = 0;
+            }
+            Err(err) => {
+                self.log_lines = Vec::new();
+                self.error(&format!("{err:#}"));
+            }
+        }
+    }
+
+    fn log_scroll_by(&mut self, delta: isize) {
+        // Upper bound is clamped against the viewport in the UI, which knows
+        // the current height; saturate at zero here.
+        self.log_scroll = self.log_scroll.saturating_add_signed(delta);
     }
 
     fn select_next(&mut self) {

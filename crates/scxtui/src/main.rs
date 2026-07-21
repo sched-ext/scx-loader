@@ -2,6 +2,7 @@
 
 mod app;
 mod backend;
+mod logs;
 mod ui;
 
 use anyhow::Result;
