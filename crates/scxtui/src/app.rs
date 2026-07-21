@@ -75,6 +75,7 @@ pub fn make_backend(kind: BackendKind) -> Result<Box<dyn SchedulerBackend>> {
 /// loop right after the frame announcing them has been drawn. Backend
 /// calls block (a hung daemon holds the D-Bus timeout, ~25 s), so the UI
 /// must show feedback *before* making them.
+#[derive(Clone, Copy)]
 enum PendingAction {
     StartOrSwitch,
     Stop,
@@ -320,7 +321,7 @@ or your distro's scx tools package)",
 
     fn on_key_logs(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('l') => {
+            KeyCode::Char('q' | 'l') | KeyCode::Esc => {
                 self.view = View::Schedulers;
             }
             KeyCode::Up | KeyCode::Char('k') => self.log_scroll_up(1),
