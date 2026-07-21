@@ -9,6 +9,7 @@
 //! [`Capabilities`] and the UI degrades gracefully.
 
 pub mod loader;
+pub mod service;
 
 use anyhow::Result;
 use scx_loader::SchedMode;

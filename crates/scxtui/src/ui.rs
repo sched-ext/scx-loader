@@ -135,18 +135,25 @@ fn draw_status_panel(frame: &mut Frame, app: &App, area: Rect) {
     draw_kernel_section(app, &mut lines);
 
     lines.push(Line::default());
-    lines.push(Line::from(vec![
-        Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(
-            format!("◀ {} ▶", mode_name(app.selected_mode())),
-            Style::default().fg(Color::Cyan),
-        ),
-        Span::raw("  (Tab to cycle)"),
-    ]));
-    if !app.selected_mode_configured() {
+    if app.capabilities().modes {
+        lines.push(Line::from(vec![
+            Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("◀ {} ▶", mode_name(app.selected_mode())),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::raw("  (Tab to cycle)"),
+        ]));
+        if !app.selected_mode_configured() {
+            lines.push(Line::from(Span::styled(
+                "  no configured arguments for this mode — scheduler defaults will be used",
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+    } else {
         lines.push(Line::from(Span::styled(
-            "  no configured arguments for this mode — scheduler defaults will be used",
-            Style::default().fg(Color::Yellow),
+            "Mode: not supported by this backend",
+            Style::default().fg(Color::DarkGray),
         )));
     }
 
@@ -299,7 +306,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             if caps.restore_default {
                 help.push_str(" · d restore");
             }
-            help.push_str(" · l logs · t monitor · R refresh · q quit");
+            help.push_str(" · l logs · t monitor · B backend · R refresh · q quit");
             help
         }
         View::Logs => String::from(

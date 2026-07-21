@@ -11,6 +11,8 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::DefaultTerminal;
 use scx_loader::SchedMode;
 
+use crate::backend::loader::LoaderBackend;
+use crate::backend::service::ServiceBackend;
 use crate::backend::{Capabilities, SchedulerBackend, Status};
 use crate::kernel::{self, KernelState};
 use crate::logs::{self, LogLine};
@@ -39,6 +41,31 @@ const REFRESH_EVERY: Duration = Duration::from_secs(5);
 /// without this, holding `r` would fire one restart per repeat.
 const ACTION_DEBOUNCE: Duration = Duration::from_millis(500);
 
+/// Which scheduler-management backend drives the app.
+#[derive(Clone, Copy, PartialEq)]
+pub enum BackendKind {
+    Loader,
+    Service,
+}
+
+impl BackendKind {
+    fn other(self) -> Self {
+        match self {
+            BackendKind::Loader => BackendKind::Service,
+            BackendKind::Service => BackendKind::Loader,
+        }
+    }
+}
+
+/// Builds a backend of the given kind, verifying it is usable (connects to
+/// D-Bus / finds the systemd unit).
+pub fn make_backend(kind: BackendKind) -> Result<Box<dyn SchedulerBackend>> {
+    Ok(match kind {
+        BackendKind::Loader => Box::new(LoaderBackend::connect()?),
+        BackendKind::Service => Box::new(ServiceBackend::connect()?),
+    })
+}
+
 /// Which screen is currently shown.
 #[derive(Clone, Copy, PartialEq)]
 pub enum View {
@@ -53,6 +80,7 @@ pub struct Message {
 
 pub struct App {
     backend: Box<dyn SchedulerBackend>,
+    backend_kind: BackendKind,
     pub schedulers: Vec<String>,
     pub selected: usize,
     pub mode_idx: usize,
@@ -84,10 +112,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(backend: Box<dyn SchedulerBackend>) -> Result<Self> {
+    pub fn new(kind: BackendKind, backend: Box<dyn SchedulerBackend>) -> Result<Self> {
         let schedulers = backend.supported_schedulers()?;
         let mut app = Self {
             backend,
+            backend_kind: kind,
             schedulers,
             selected: 0,
             mode_idx: 0,
@@ -205,10 +234,15 @@ or your distro's scx tools package)",
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('l') => self.open_logs(),
             KeyCode::Char('t') => self.pending_monitor = true,
+            KeyCode::Char('B') => self.toggle_backend(),
             KeyCode::Down | KeyCode::Char('j') => self.select_next(),
             KeyCode::Up | KeyCode::Char('k') => self.select_prev(),
-            KeyCode::Tab | KeyCode::Char('m') => self.cycle_mode(1),
-            KeyCode::BackTab | KeyCode::Char('M') => self.cycle_mode(-1),
+            KeyCode::Tab | KeyCode::Char('m') if self.backend.capabilities().modes => {
+                self.cycle_mode(1)
+            }
+            KeyCode::BackTab | KeyCode::Char('M') if self.backend.capabilities().modes => {
+                self.cycle_mode(-1)
+            }
             KeyCode::Enter => {
                 if self.action_allowed() {
                     self.start_or_switch();
@@ -259,6 +293,38 @@ or your distro's scx tools package)",
             KeyCode::Char('R') => self.reload_logs(),
             _ => {}
         }
+    }
+
+    /// Swaps the running backend for the other kind, rebuilding everything
+    /// derived from it. On failure the current backend stays in place and
+    /// the error lands in the message bar.
+    fn toggle_backend(&mut self) {
+        let target = self.backend_kind.other();
+        match make_backend(target) {
+            Ok(backend) => {
+                self.backend = backend;
+                self.backend_kind = target;
+                self.selected = 0;
+                self.mode_idx = 0;
+                match self.backend.supported_schedulers() {
+                    Ok(schedulers) => self.schedulers = schedulers,
+                    Err(err) => {
+                        self.schedulers = Vec::new();
+                        self.error(&format!("scheduler list failed: {err:#}"));
+                        return;
+                    }
+                }
+                self.refresh_status();
+                self.refresh_modes();
+                self.info(&format!("switched to {} backend", self.backend.label()));
+            }
+            Err(err) => self.error(&format!("cannot switch backend: {err:#}")),
+        }
+    }
+
+    /// Public entry for one-off notices (e.g. the startup fallback note).
+    pub fn notify(&mut self, text: &str) {
+        self.info(text);
     }
 
     fn open_logs(&mut self) {
