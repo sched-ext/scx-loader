@@ -26,11 +26,11 @@ use zbus::proxy::CacheProperties;
 
 use super::{Capabilities, SchedulerBackend, Status};
 
-/// Sentinel used by scx_loader for "nothing running / not configured".
+/// Sentinel used by `scx_loader` for "nothing running / not configured".
 const UNKNOWN: &str = "unknown";
 
 /// Minimal string-based client for `org.scx.Loader`. Method names map to
-/// D-Bus member names via zbus's snake_case -> PascalCase convention.
+/// D-Bus member names via zbus's `snake_case` -> `PascalCase` convention.
 #[zbus::proxy(
     interface = "org.scx.Loader",
     default_service = "org.scx.Loader",

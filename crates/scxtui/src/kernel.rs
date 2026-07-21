@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 
-//! The kernel's own view of sched_ext, read straight from sysfs.
+//! The kernel's own view of `sched_ext`, read straight from sysfs.
 //!
-//! scx_loader only knows about schedulers *it* started; the kernel knows
+//! `scx_loader` only knows about schedulers *it* started; the kernel knows
 //! what is actually attached. Reading `/sys/kernel/sched_ext` lets the UI
 //! show ground truth and flag disagreements — a scheduler launched by hand
 //! next to the loader, a scheduler that got kicked out by the watchdog
@@ -20,7 +20,7 @@ pub struct KernelState {
     pub state: String,
     /// BPF ops name from `root/ops` when a scheduler is attached — the name
     /// the scheduler registered with, typically without the `scx_` prefix
-    /// (e.g. "lavd" for scx_lavd).
+    /// (e.g. "lavd" for `scx_lavd`).
     pub ops: Option<String>,
 }
 
@@ -48,8 +48,8 @@ impl KernelState {
     }
 }
 
-/// Reads the kernel's sched_ext state. `None` means the sysfs directory is
-/// absent, i.e. the running kernel was built without sched_ext.
+/// Reads the kernel's `sched_ext` state. `None` means the sysfs directory is
+/// absent, i.e. the running kernel was built without `sched_ext`.
 pub fn read() -> Option<KernelState> {
     let dir = Path::new(SYSFS_DIR);
     if !dir.is_dir() {

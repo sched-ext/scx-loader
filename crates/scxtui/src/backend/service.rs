@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 
-//! `scx.service` backend: the pre-scx_loader way of running sched_ext
+//! `scx.service` backend: the pre-`scx_loader` way of running `sched_ext`
 //! schedulers, driven by a config file (`SCX_SCHEDULER` / `SCX_FLAGS`) and
 //! plain systemctl. It exists for systems without the loader daemon.
 //!
@@ -46,12 +46,11 @@ impl ServiceBackend {
             .iter()
             .map(Path::new)
             .find(|p| p.exists())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from(CONFIG_CANDIDATES[0]));
+            .map_or_else(|| PathBuf::from(CONFIG_CANDIDATES[0]), Path::to_path_buf);
         Ok(Self { config_path })
     }
 
-    fn systemctl(&self, verb: &str) -> Result<()> {
+    fn systemctl(verb: &str) -> Result<()> {
         let out = Command::new("systemctl")
             .args([verb, UNIT])
             .output()
@@ -66,12 +65,11 @@ impl ServiceBackend {
         Ok(())
     }
 
-    fn is_active(&self) -> bool {
+    fn is_active() -> bool {
         Command::new("systemctl")
             .args(["is-active", "--quiet", UNIT])
             .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+            .is_ok_and(|status| status.success())
     }
 
     /// Returns (configured scheduler, configured flags). Missing or
@@ -101,7 +99,7 @@ impl ServiceBackend {
     }
 
     /// Rewrites `SCX_SCHEDULER=` in place, preserving every other line
-    /// (comments, SCX_FLAGS, unrelated variables), appending the key if it
+    /// (comments, `SCX_FLAGS`, unrelated variables), appending the key if it
     /// was absent.
     fn write_scheduler(&self, sched: &str) -> Result<()> {
         let content = fs::read_to_string(&self.config_path).unwrap_or_default();
@@ -178,7 +176,7 @@ impl SchedulerBackend for ServiceBackend {
 
     fn status(&self) -> Result<Status> {
         let (sched, flags) = self.read_config();
-        let active = self.is_active();
+        let active = Self::is_active();
         Ok(Status {
             current: if active {
                 // Active unit with no readable SCX_SCHEDULER: still show
@@ -208,22 +206,22 @@ impl SchedulerBackend for ServiceBackend {
 
     fn start(&self, sched: &str, _mode: SchedMode) -> Result<()> {
         self.write_scheduler(sched)?;
-        self.systemctl("start")
+        Self::systemctl("start")
     }
 
     fn switch(&self, sched: &str, _mode: SchedMode) -> Result<()> {
         // "Switch" here is config edit + restart; declared via
         // `live_switch: false` so the UI words it accordingly.
         self.write_scheduler(sched)?;
-        self.systemctl("restart")
+        Self::systemctl("restart")
     }
 
     fn stop(&self) -> Result<()> {
-        self.systemctl("stop")
+        Self::systemctl("stop")
     }
 
     fn restart(&self) -> Result<()> {
-        self.systemctl("restart")
+        Self::systemctl("restart")
     }
 
     fn restore_default(&self) -> Result<()> {

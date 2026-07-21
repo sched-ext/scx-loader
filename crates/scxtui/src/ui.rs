@@ -217,7 +217,7 @@ fn draw_logs(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(panel, area);
 }
 
-/// The kernel-truth section: what sched_ext itself reports, plus soft
+/// The kernel-truth section: what `sched_ext` itself reports, plus soft
 /// warnings whenever it disagrees with what the loader claims. The loader
 /// only knows about schedulers it started; the kernel knows what is
 /// actually attached.

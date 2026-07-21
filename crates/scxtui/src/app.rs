@@ -32,9 +32,9 @@ const TICK: Duration = Duration::from_millis(250);
 /// How often the status is refreshed in the background. The scheduler can
 /// change under us (scxctl, another scxtui, a desktop applet), so the view
 /// must not assume it is the only writer. Kept moderate because with property
-/// caching disabled every refresh hits the daemon, and its CurrentScheduler
+/// caching disabled every refresh hits the daemon, and its `CurrentScheduler`
 /// getter currently logs each read to the journal; can go back down once the
-/// daemon-side log demotion / PropertiesChanged work lands.
+/// daemon-side log demotion / `PropertiesChanged` work lands.
 const REFRESH_EVERY: Duration = Duration::from_secs(5);
 /// Minimum spacing between two scheduler-affecting actions. Linux terminals
 /// deliver key autorepeat as plain `Press` events (no kitty protocol), so
@@ -85,8 +85,8 @@ pub struct App {
     pub selected: usize,
     pub mode_idx: usize,
     pub status: Option<Status>,
-    /// The kernel's own view of sched_ext, refreshed alongside `status`.
-    /// `None` = kernel without sched_ext support.
+    /// The kernel's own view of `sched_ext`, refreshed alongside `status`.
+    /// `None` = kernel without `sched_ext` support.
     pub kernel: Option<KernelState>,
     /// Configured modes for the currently selected scheduler.
     pub configured_modes: Vec<SchedMode>,
@@ -103,7 +103,7 @@ pub struct App {
     /// Scroll offset counted from the bottom; 0 sticks to the newest line.
     pub log_scroll: usize,
     /// Last known height of the log viewport, written back by the UI so
-    /// PgUp/PgDn can page by exactly one screen.
+    /// `PgUp`/`PgDn` can page by exactly one screen.
     pub log_page: usize,
     /// Set by the `t` key; the event loop launches scxtop on the next
     /// iteration, where it has access to the terminal.
@@ -199,7 +199,7 @@ impl App {
     /// itself; a fresh `ratatui::init()` afterwards re-enters ours, and the
     /// explicit clear forces a full repaint of a screen scxtop scribbled
     /// over. Keeping scxtop out-of-process also keeps its heavyweight BPF
-    /// dependency chain (and its root/CAP_BPF requirement) out of this
+    /// dependency chain (and its root/`CAP_BPF` requirement) out of this
     /// binary: scxtui itself stays an unprivileged D-Bus client.
     fn run_monitor(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         ratatui::restore();
@@ -238,10 +238,10 @@ or your distro's scx tools package)",
             KeyCode::Down | KeyCode::Char('j') => self.select_next(),
             KeyCode::Up | KeyCode::Char('k') => self.select_prev(),
             KeyCode::Tab | KeyCode::Char('m') if self.backend.capabilities().modes => {
-                self.cycle_mode(1)
+                self.cycle_mode(true);
             }
             KeyCode::BackTab | KeyCode::Char('M') if self.backend.capabilities().modes => {
-                self.cycle_mode(-1)
+                self.cycle_mode(false);
             }
             KeyCode::Enter => {
                 if self.action_allowed() {
@@ -276,10 +276,10 @@ or your distro's scx tools package)",
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc | KeyCode::Char('l') => self.view = View::Schedulers,
-            KeyCode::Up | KeyCode::Char('k') => self.log_scroll_by(1),
-            KeyCode::Down | KeyCode::Char('j') => self.log_scroll_by(-1),
-            KeyCode::PageUp => self.log_scroll_by(self.log_page as isize),
-            KeyCode::PageDown => self.log_scroll_by(-(self.log_page as isize)),
+            KeyCode::Up | KeyCode::Char('k') => self.log_scroll_up(1),
+            KeyCode::Down | KeyCode::Char('j') => self.log_scroll_down(1),
+            KeyCode::PageUp => self.log_scroll_up(self.log_page),
+            KeyCode::PageDown => self.log_scroll_down(self.log_page),
             KeyCode::Char('g') => self.log_scroll = usize::MAX, // clamped by the UI
             KeyCode::Char('G') => self.log_scroll = 0,
             KeyCode::Char('b') => {
@@ -351,10 +351,14 @@ or your distro's scx tools package)",
         }
     }
 
-    fn log_scroll_by(&mut self, delta: isize) {
-        // Upper bound is clamped against the viewport in the UI, which knows
-        // the current height; saturate at zero here.
-        self.log_scroll = self.log_scroll.saturating_add_signed(delta);
+    /// The upper bound is clamped against the viewport in the UI, which
+    /// knows the current height; only the zero bound is handled here.
+    fn log_scroll_up(&mut self, lines: usize) {
+        self.log_scroll = self.log_scroll.saturating_add(lines);
+    }
+
+    fn log_scroll_down(&mut self, lines: usize) {
+        self.log_scroll = self.log_scroll.saturating_sub(lines);
     }
 
     fn select_next(&mut self) {
@@ -371,9 +375,13 @@ or your distro's scx tools package)",
         }
     }
 
-    fn cycle_mode(&mut self, dir: isize) {
-        let len = MODES.len() as isize;
-        self.mode_idx = ((self.mode_idx as isize + dir).rem_euclid(len)) as usize;
+    fn cycle_mode(&mut self, forward: bool) {
+        let len = MODES.len();
+        self.mode_idx = if forward {
+            (self.mode_idx + 1) % len
+        } else {
+            (self.mode_idx + len - 1) % len
+        };
     }
 
     /// Debounce gate for scheduler-affecting actions (Enter/s/r/d). Returns

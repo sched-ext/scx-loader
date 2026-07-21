@@ -88,7 +88,7 @@ pub fn fetch(unit: &str, previous_boot: bool) -> Result<Vec<LogLine>> {
             Some(serde_json::Value::Array(bytes)) => {
                 let raw: Vec<u8> = bytes
                     .iter()
-                    .filter_map(|b| b.as_u64().map(|b| b as u8))
+                    .filter_map(|b| b.as_u64().and_then(|b| u8::try_from(b).ok()))
                     .collect();
                 String::from_utf8_lossy(&raw).into_owned()
             }
