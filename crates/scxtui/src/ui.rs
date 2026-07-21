@@ -8,7 +8,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, View};
@@ -22,7 +22,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         [
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(2),
+            Constraint::Length(3),
         ],
     )
     .areas(frame.area());
@@ -157,8 +157,9 @@ fn draw_status_panel(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
-    let panel =
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Status "));
+    let panel = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(Block::default().borders(Borders::ALL).title(" Status "));
     frame.render_widget(panel, area);
 }
 
@@ -291,7 +292,7 @@ fn priority_style(priority: u8) -> Style {
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let [keys_area, message_area] = Layout::new(
         Direction::Vertical,
-        [Constraint::Length(1), Constraint::Length(1)],
+        [Constraint::Length(1), Constraint::Length(2)],
     )
     .areas(area);
 
@@ -310,7 +311,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             help
         }
         View::Logs => String::from(
-            " ↑/↓ scroll · PgUp/PgDn page · g/G top/bottom · b boot · u unit · R reload · Esc back · q quit",
+            " ↑/↓ scroll · PgUp/PgDn page · g/G top/bottom · b boot · u unit · R reload · q/Esc back",
         ),
     };
 
@@ -327,7 +328,10 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             format!(" {}", message.text),
             Style::default().fg(color),
         ));
-        frame.render_widget(Paragraph::new(line), message_area);
+        frame.render_widget(
+            Paragraph::new(line).wrap(Wrap { trim: false }),
+            message_area,
+        );
     }
 }
 

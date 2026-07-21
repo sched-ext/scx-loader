@@ -19,7 +19,7 @@
 //! D-Bus round-trip, which keeps the event loop a plain `crossterm` poll
 //! instead of a full async runtime.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use scx_loader::SchedMode;
 use zbus::blocking::Connection;
 use zbus::proxy::CacheProperties;
@@ -92,9 +92,15 @@ impl LoaderBackend {
             .cache_properties(CacheProperties::No)
             .build()
             .context("failed to create the org.scx.Loader proxy")?;
-        proxy.supported_schedulers().context(
-            "org.scx.Loader did not respond — is the scx_loader service installed and running?",
-        )?;
+        // zbus errors already render their full cause in `Display`, so the
+        // source chain is flattened here — otherwise anyhow's `{:#}` output
+        // repeats the underlying D-Bus message twice.
+        proxy
+            .supported_schedulers()
+            .map_err(|err| anyhow!("{err}"))
+            .context(
+                "org.scx.Loader did not respond — is the scx_loader service installed and running?",
+            )?;
         Ok(Self { proxy })
     }
 }

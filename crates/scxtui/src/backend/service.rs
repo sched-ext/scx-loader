@@ -103,29 +103,19 @@ impl ServiceBackend {
     /// was absent.
     fn write_scheduler(&self, sched: &str) -> Result<()> {
         let content = fs::read_to_string(&self.config_path).unwrap_or_default();
-        let mut replaced = false;
-        let mut lines: Vec<String> = content
-            .lines()
-            .map(|line| {
-                if line.trim_start().starts_with("SCX_SCHEDULER=") {
-                    replaced = true;
-                    format!("SCX_SCHEDULER={sched}")
-                } else {
-                    line.to_owned()
-                }
-            })
-            .collect();
-        if !replaced {
-            lines.push(format!("SCX_SCHEDULER={sched}"));
-        }
-        let mut text = lines.join("\n");
-        text.push('\n');
-        fs::write(&self.config_path, text).with_context(|| {
+        let text = render_config(&content, sched);
+        // Write-then-rename so a crash or a full disk mid-write can never
+        // leave the system config truncated; the temp file lives in the
+        // same directory, which makes the rename atomic.
+        let tmp = self.config_path.with_extension("scxtui-tmp");
+        fs::write(&tmp, text).with_context(|| {
             format!(
                 "cannot write {} — editing it requires root; run scxtui as root to control {UNIT}",
-                self.config_path.display()
+                tmp.display()
             )
-        })
+        })?;
+        fs::rename(&tmp, &self.config_path)
+            .with_context(|| format!("cannot move {} into place", tmp.display()))
     }
 }
 
@@ -138,23 +128,52 @@ fn unquote(value: &str) -> &str {
         .unwrap_or(value)
 }
 
+/// Pure core of [`ServiceBackend::write_scheduler`]: rewrites
+/// `SCX_SCHEDULER=` in place, preserving every other line, appending the
+/// key if it was absent. Always ends with a trailing newline.
+fn render_config(content: &str, sched: &str) -> String {
+    let mut replaced = false;
+    let mut lines: Vec<String> = content
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("SCX_SCHEDULER=") {
+                replaced = true;
+                format!("SCX_SCHEDULER={sched}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect();
+    if !replaced {
+        lines.push(format!("SCX_SCHEDULER={sched}"));
+    }
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
+}
+
 /// The service has no advertised scheduler list, so the closest honest
 /// source of truth is what is actually installed: every `scx_*` executable
 /// in PATH, minus the loader daemon itself. Sorted and deduplicated.
 fn scan_path_for_schedulers() -> Vec<String> {
+    let dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    scan_dirs(dirs)
+}
+
+fn scan_dirs(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
     use std::collections::BTreeSet;
 
     let mut found = BTreeSet::new();
-    if let Some(path) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path) {
-            let Ok(entries) = fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name.starts_with("scx_") && name != "scx_loader" && entry.path().is_file() {
-                    found.insert(name);
-                }
+    for dir in dirs {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("scx_") && name != "scx_loader" && entry.path().is_file() {
+                found.insert(name);
             }
         }
     }
@@ -226,5 +245,54 @@ impl SchedulerBackend for ServiceBackend {
 
     fn restore_default(&self) -> Result<()> {
         bail!("the {UNIT} backend has no restore-default operation")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unquote_handles_quote_styles() {
+        assert_eq!(unquote("\"scx_lavd\""), "scx_lavd");
+        assert_eq!(unquote("'scx_lavd'"), "scx_lavd");
+        assert_eq!(unquote("scx_lavd"), "scx_lavd");
+        assert_eq!(unquote("  scx_lavd  "), "scx_lavd");
+        // A lone opening quote is not a quoted value.
+        assert_eq!(unquote("\"scx_lavd"), "\"scx_lavd");
+    }
+
+    #[test]
+    fn render_config_replaces_in_place() {
+        let before = "# managed by hand\nSCX_SCHEDULER=scx_rusty\nSCX_FLAGS=\"-v\"\n";
+        let after = render_config(before, "scx_lavd");
+        assert_eq!(
+            after,
+            "# managed by hand\nSCX_SCHEDULER=scx_lavd\nSCX_FLAGS=\"-v\"\n"
+        );
+    }
+
+    #[test]
+    fn render_config_appends_when_absent() {
+        let after = render_config("SCX_FLAGS=\"-v\"\n", "scx_lavd");
+        assert_eq!(after, "SCX_FLAGS=\"-v\"\nSCX_SCHEDULER=scx_lavd\n");
+    }
+
+    #[test]
+    fn render_config_from_empty_file() {
+        assert_eq!(render_config("", "scx_lavd"), "SCX_SCHEDULER=scx_lavd\n");
+    }
+
+    #[test]
+    fn scan_dirs_filters_and_sorts() {
+        let dir = std::env::temp_dir().join(format!("scxtui-scan-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for name in ["scx_zeta", "scx_alpha", "scx_loader", "not_a_sched"] {
+            fs::File::create(dir.join(name)).unwrap();
+        }
+        let found = scan_dirs([dir.clone()]);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(found, ["scx_alpha", "scx_zeta"]);
     }
 }

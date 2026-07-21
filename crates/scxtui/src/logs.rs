@@ -14,9 +14,11 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use chrono::TimeZone;
 
-/// Units the log view can inspect. `scx_loader.service` is the phase-1
-/// default; `scx.service` is here ahead of the phase-2 backend so the log
-/// view doesn't need touching then.
+/// Units the log view can inspect, matching the two management backends:
+/// `scx_loader.service` for the D-Bus loader daemon and `scx.service` for
+/// the plain systemd service. Both are always offered — logs from the unit
+/// that is *not* driving the current backend are often exactly what one is
+/// looking for.
 pub const UNITS: [&str; 2] = ["scx_loader.service", "scx.service"];
 
 /// One display line of the log view.
@@ -60,12 +62,18 @@ pub fn fetch(unit: &str, previous_boot: bool) -> Result<Vec<LogLine>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_entries(&stdout))
+}
+
+/// Pure parsing core: one `journalctl --output=json` line per entry in,
+/// flattened display lines out. Malformed entries are skipped rather than
+/// failing the whole view.
+fn parse_entries(stdout: &str) -> Vec<LogLine> {
     let mut lines = Vec::new();
     for raw in stdout.lines() {
         if raw.is_empty() {
             continue;
         }
-        // Tolerate individual malformed entries instead of failing the view.
         let Ok(entry) = serde_json::from_str::<serde_json::Value>(raw) else {
             continue;
         };
@@ -104,7 +112,7 @@ pub fn fetch(unit: &str, previous_boot: bool) -> Result<Vec<LogLine>> {
             });
         }
     }
-    Ok(lines)
+    lines
 }
 
 fn format_local_time(usec: i64) -> String {
@@ -113,4 +121,49 @@ fn format_local_time(usec: i64) -> String {
         .single()
         .map(|dt| dt.format("%H:%M:%S").to_string())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_priority_with_info_default() {
+        let entries = parse_entries(concat!(
+            r#"{"PRIORITY":"3","MESSAGE":"boom"}"#,
+            "\n",
+            r#"{"MESSAGE":"plain"}"#,
+        ));
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].priority, 3);
+        assert_eq!(entries[1].priority, 6);
+    }
+
+    #[test]
+    fn flattens_multiline_messages() {
+        let entries = parse_entries(
+            r#"{"PRIORITY":"6","MESSAGE":"Opts {\n  verbose: 0,\n}","__REALTIME_TIMESTAMP":"1753000000000000"}"#,
+        );
+        assert_eq!(entries.len(), 3);
+        assert!(!entries[0].continuation);
+        assert!(entries[1].continuation && entries[2].continuation);
+        assert!(entries[1].time.is_empty());
+        assert_eq!(entries[1].text, "  verbose: 0,");
+        // Continuation lines inherit the entry's priority.
+        assert_eq!(entries[2].priority, 6);
+    }
+
+    #[test]
+    fn decodes_byte_array_messages() {
+        let entries = parse_entries(r#"{"MESSAGE":[104,105]}"#);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].text, "hi");
+    }
+
+    #[test]
+    fn skips_malformed_and_empty_lines() {
+        let entries = parse_entries("not json\n\n{\"MESSAGE\":\"ok\"}\n{\"NO_MESSAGE\":true}");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].text, "ok");
+    }
 }

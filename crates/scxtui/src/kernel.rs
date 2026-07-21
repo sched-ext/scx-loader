@@ -65,3 +65,46 @@ pub fn read() -> Option<KernelState> {
         .filter(|s| !s.is_empty());
     Some(KernelState { state, ops })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn enabled_with(ops: Option<&str>) -> KernelState {
+        KernelState {
+            state: "enabled".to_owned(),
+            ops: ops.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn matches_stripped_ops_name() {
+        assert!(enabled_with(Some("lavd")).matches("scx_lavd"));
+    }
+
+    #[test]
+    fn matches_full_ops_name() {
+        assert!(enabled_with(Some("scx_lavd")).matches("scx_lavd"));
+    }
+
+    #[test]
+    fn matches_versioned_ops_suffix() {
+        // bpfland registers e.g. "bpfland_1.1.2_x86_64_unknown_linux_gnu".
+        assert!(enabled_with(Some("bpfland_1.1.2_x86_64_unknown_linux_gnu")).matches("scx_bpfland"));
+    }
+
+    #[test]
+    fn rejects_a_different_scheduler() {
+        assert!(!enabled_with(Some("flow_1.0")).matches("scx_flash"));
+    }
+
+    #[test]
+    fn rejects_prefix_without_separator() {
+        assert!(!enabled_with(Some("bpflandish")).matches("scx_bpfland"));
+    }
+
+    #[test]
+    fn no_ops_never_matches() {
+        assert!(!enabled_with(None).matches("scx_lavd"));
+    }
+}

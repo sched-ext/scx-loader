@@ -2,11 +2,13 @@
 
 //! Backend abstraction.
 //!
-//! Phase 1 ships a single implementation ([`loader::LoaderBackend`]) talking
-//! to `org.scx.Loader` over D-Bus. The trait exists so that a future
-//! `scx.service` backend (config file + systemctl) can slot in without
-//! touching the UI: backends with a reduced feature set declare it via
-//! [`Capabilities`] and the UI degrades gracefully.
+//! Two implementations exist: [`loader::LoaderBackend`] talks to
+//! `org.scx.Loader` over D-Bus and is the preferred choice, while
+//! [`service::ServiceBackend`] drives `scx.service` through its config file
+//! and `systemctl` on systems without the loader daemon. The trait keeps
+//! rendering and input handling independent of either: backends with a
+//! reduced feature set declare it via [`Capabilities`] and the UI degrades
+//! gracefully instead of offering operations that cannot work.
 
 pub mod loader;
 pub mod service;
@@ -45,8 +47,9 @@ pub struct Status {
 /// Common interface every scheduler-management backend implements.
 ///
 /// Scheduler names cross this boundary as plain strings (full names with the
-/// `scx_` prefix): the trait must stay agnostic of `SupportedSched`, since a
-/// `scx.service` backend would enumerate schedulers differently.
+/// `scx_` prefix): the trait stays agnostic of `SupportedSched`, since the
+/// backends enumerate schedulers from different sources (the daemon's
+/// advertised list vs. binaries installed in `PATH`).
 pub trait SchedulerBackend {
     /// Short human-readable backend name for the status bar.
     fn label(&self) -> &'static str;

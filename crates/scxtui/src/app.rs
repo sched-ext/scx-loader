@@ -27,14 +27,19 @@ pub const MODES: [SchedMode; 5] = [
     SchedMode::Server,
 ];
 
+/// Lower-case mode name, matching the status panel and scxctl's CLI.
+fn mode_label(mode: SchedMode) -> &'static str {
+    <&str>::from(mode)
+}
+
 /// How often the input poll wakes up to redraw / refresh.
 const TICK: Duration = Duration::from_millis(250);
 /// How often the status is refreshed in the background. The scheduler can
 /// change under us (scxctl, another scxtui, a desktop applet), so the view
 /// must not assume it is the only writer. Kept moderate because with property
-/// caching disabled every refresh hits the daemon, and its `CurrentScheduler`
-/// getter currently logs each read to the journal; can go back down once the
-/// daemon-side log demotion / `PropertiesChanged` work lands.
+/// caching disabled every refresh is a real round-trip to the daemon. The
+/// proper end state is the daemon emitting `PropertiesChanged` so clients
+/// subscribe instead of polling; until that lands upstream this stays a poll.
 const REFRESH_EVERY: Duration = Duration::from_secs(5);
 /// Minimum spacing between two scheduler-affecting actions. Linux terminals
 /// deliver key autorepeat as plain `Press` events (no kitty protocol), so
@@ -64,6 +69,19 @@ pub fn make_backend(kind: BackendKind) -> Result<Box<dyn SchedulerBackend>> {
         BackendKind::Loader => Box::new(LoaderBackend::connect()?),
         BackendKind::Service => Box::new(ServiceBackend::connect()?),
     })
+}
+
+/// Deferred user actions: queued by key handlers, executed by the event
+/// loop right after the frame announcing them has been drawn. Backend
+/// calls block (a hung daemon holds the D-Bus timeout, ~25 s), so the UI
+/// must show feedback *before* making them.
+enum PendingAction {
+    StartOrSwitch,
+    Stop,
+    Restart,
+    RestoreDefault,
+    ToggleBackend,
+    Monitor,
 }
 
 /// Which screen is currently shown.
@@ -105,9 +123,9 @@ pub struct App {
     /// Last known height of the log viewport, written back by the UI so
     /// `PgUp`/`PgDn` can page by exactly one screen.
     pub log_page: usize,
-    /// Set by the `t` key; the event loop launches scxtop on the next
-    /// iteration, where it has access to the terminal.
-    pending_monitor: bool,
+    /// Queued by key handlers, executed by the event loop after the next
+    /// draw; see [`PendingAction`].
+    pending_action: Option<PendingAction>,
     should_quit: bool,
 }
 
@@ -131,7 +149,7 @@ impl App {
             log_lines: Vec::new(),
             log_scroll: 0,
             log_page: 20,
-            pending_monitor: false,
+            pending_action: None,
             should_quit: false,
         };
         app.refresh_status();
@@ -171,18 +189,21 @@ impl App {
         while !self.should_quit {
             terminal.draw(|frame| ui::draw(frame, self))?;
 
+            // Execute a queued action only after the frame announcing it
+            // ("working…") has been drawn, then redraw immediately so the
+            // result replaces the notice.
+            if let Some(action) = self.pending_action.take() {
+                self.run_action(action, &mut terminal)?;
+                last_refresh = Instant::now();
+                continue;
+            }
+
             if event::poll(TICK)? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
                         self.on_key(key);
                     }
                 }
-            }
-
-            if self.pending_monitor {
-                self.pending_monitor = false;
-                self.run_monitor(&mut terminal)?;
-                last_refresh = Instant::now();
             }
 
             if last_refresh.elapsed() >= REFRESH_EVERY {
@@ -222,6 +243,27 @@ or your distro's scx tools package)",
         Ok(())
     }
 
+    /// Queues a scheduler-affecting action behind a "working…" notice, so
+    /// the notice renders before the blocking backend call starts.
+    fn queue(&mut self, action: PendingAction) {
+        self.info("working…");
+        self.pending_action = Some(action);
+    }
+
+    fn run_action(&mut self, action: PendingAction, terminal: &mut DefaultTerminal) -> Result<()> {
+        match action {
+            PendingAction::StartOrSwitch => self.start_or_switch(),
+            PendingAction::Stop => self.act("stopped", |b| b.stop()),
+            PendingAction::Restart => self.restart_scheduler(),
+            PendingAction::RestoreDefault => {
+                self.act("restored default scheduler", |b| b.restore_default());
+            }
+            PendingAction::ToggleBackend => self.toggle_backend(),
+            PendingAction::Monitor => self.run_monitor(terminal)?,
+        }
+        Ok(())
+    }
+
     fn on_key(&mut self, key: KeyEvent) {
         match self.view {
             View::Schedulers => self.on_key_schedulers(key),
@@ -233,8 +275,12 @@ or your distro's scx tools package)",
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('l') => self.open_logs(),
-            KeyCode::Char('t') => self.pending_monitor = true,
-            KeyCode::Char('B') => self.toggle_backend(),
+            KeyCode::Char('t') => self.pending_action = Some(PendingAction::Monitor),
+            KeyCode::Char('B') => {
+                if self.action_allowed() {
+                    self.queue(PendingAction::ToggleBackend);
+                }
+            }
             KeyCode::Down | KeyCode::Char('j') => self.select_next(),
             KeyCode::Up | KeyCode::Char('k') => self.select_prev(),
             KeyCode::Tab | KeyCode::Char('m') if self.backend.capabilities().modes => {
@@ -245,22 +291,22 @@ or your distro's scx tools package)",
             }
             KeyCode::Enter => {
                 if self.action_allowed() {
-                    self.start_or_switch();
+                    self.queue(PendingAction::StartOrSwitch);
                 }
             }
             KeyCode::Char('s') => {
                 if self.action_allowed() {
-                    self.act("stopped", |b| b.stop());
+                    self.queue(PendingAction::Stop);
                 }
             }
             KeyCode::Char('r') => {
                 if self.action_allowed() {
-                    self.act("restarted", |b| b.restart());
+                    self.queue(PendingAction::Restart);
                 }
             }
             KeyCode::Char('d') => {
                 if self.backend.capabilities().restore_default && self.action_allowed() {
-                    self.act("restored default scheduler", |b| b.restore_default());
+                    self.queue(PendingAction::RestoreDefault);
                 }
             }
             KeyCode::Char('R') => {
@@ -274,8 +320,9 @@ or your distro's scx tools package)",
 
     fn on_key_logs(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Esc | KeyCode::Char('l') => self.view = View::Schedulers,
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('l') => {
+                self.view = View::Schedulers;
+            }
             KeyCode::Up | KeyCode::Char('k') => self.log_scroll_up(1),
             KeyCode::Down | KeyCode::Char('j') => self.log_scroll_down(1),
             KeyCode::PageUp => self.log_scroll_up(self.log_page),
@@ -295,25 +342,23 @@ or your distro's scx tools package)",
         }
     }
 
-    /// Swaps the running backend for the other kind, rebuilding everything
-    /// derived from it. On failure the current backend stays in place and
-    /// the error lands in the message bar.
+    /// Swaps the running backend for the other kind. The switch is
+    /// transactional: the target backend must connect *and* enumerate its
+    /// schedulers before any state is replaced, so a failure at either step
+    /// leaves the current backend fully intact.
     fn toggle_backend(&mut self) {
         let target = self.backend_kind.other();
-        match make_backend(target) {
-            Ok(backend) => {
+        let prepared = make_backend(target).and_then(|backend| {
+            let schedulers = backend.supported_schedulers()?;
+            Ok((backend, schedulers))
+        });
+        match prepared {
+            Ok((backend, schedulers)) => {
                 self.backend = backend;
                 self.backend_kind = target;
+                self.schedulers = schedulers;
                 self.selected = 0;
                 self.mode_idx = 0;
-                match self.backend.supported_schedulers() {
-                    Ok(schedulers) => self.schedulers = schedulers,
-                    Err(err) => {
-                        self.schedulers = Vec::new();
-                        self.error(&format!("scheduler list failed: {err:#}"));
-                        return;
-                    }
-                }
                 self.refresh_status();
                 self.refresh_modes();
                 self.info(&format!("switched to {} backend", self.backend.label()));
@@ -384,9 +429,10 @@ or your distro's scx tools package)",
         };
     }
 
-    /// Debounce gate for scheduler-affecting actions (Enter/s/r/d). Returns
-    /// `true` and arms the timer when enough time has passed since the last
-    /// action; swallows the event otherwise. See [`ACTION_DEBOUNCE`].
+    /// Debounce gate for scheduler-affecting actions (Enter/s/r/d/B).
+    /// Returns `true` and arms the timer when enough time has passed since
+    /// the last action; swallows the event otherwise. See
+    /// [`ACTION_DEBOUNCE`].
     fn action_allowed(&mut self) -> bool {
         let now = Instant::now();
         if self
@@ -399,36 +445,101 @@ or your distro's scx tools package)",
         true
     }
 
-    /// `Enter`: start when nothing is running, switch otherwise — the TUI
-    /// can make that call itself instead of erroring like a CLI has to.
+    /// `Enter`: start when nothing is running, switch otherwise — including
+    /// "switching" the running scheduler to a different mode, which is how
+    /// the loader models a mode change. The TUI can make that call itself
+    /// instead of erroring like a CLI has to.
     fn start_or_switch(&mut self) {
         let Some(sched) = self.selected_scheduler().map(str::to_owned) else {
             return;
         };
         let mode = self.selected_mode();
+        // Re-read the daemon state right before deciding start vs switch:
+        // the cached status can be up to REFRESH_EVERY old, and another
+        // client may have started a scheduler in that window.
+        self.refresh_status();
         let running = self
             .status
             .as_ref()
-            .is_some_and(|status| status.current.is_some());
+            .and_then(|status| status.current.clone());
 
-        let (verb, result) = if running {
-            ("switched to", self.backend.switch(&sched, mode))
+        let same_scheduler = running.as_deref() == Some(sched.as_str());
+        let result = if running.is_some() {
+            self.backend.switch(&sched, mode)
         } else {
-            ("started", self.backend.start(&sched, mode))
+            self.backend.start(&sched, mode)
         };
 
         match result {
             Ok(()) => {
-                let text = if self.selected_mode_configured() {
-                    format!("{verb} {sched} in {mode:?} mode")
+                let mode_str = mode_label(mode);
+                let base = if running.is_none() {
+                    format!("started {sched} in {mode_str} mode")
+                } else if same_scheduler {
+                    format!("switched {sched} to {mode_str} mode")
                 } else {
-                    format!("{verb} {sched} with its own defaults ({mode:?} not configured)")
+                    format!("switched to {sched} in {mode_str} mode")
+                };
+                let text = if self.selected_mode_configured() {
+                    base
+                } else {
+                    format!("{base} — no arguments configured, scheduler defaults in use")
                 };
                 self.info(&text);
             }
-            Err(err) => self.error(&format!("{verb} {sched} failed: {err:#}")),
+            Err(err) => {
+                let verb = if running.is_some() {
+                    "switch to"
+                } else {
+                    "start"
+                };
+                self.error(&format!("{verb} {sched} failed: {err:#}"));
+            }
         }
         self.refresh_status();
+    }
+
+    /// `r`: restart. Plain `RestartScheduler` deliberately reuses the
+    /// original configuration, so by itself it can never apply a mode
+    /// change — and the very first piece of community feedback was someone
+    /// restarting after flipping the mode selector and reasonably expecting
+    /// the new mode to stick. When the selection points at the running
+    /// scheduler, no custom arguments are in play and the selector differs
+    /// from the active mode, `r` therefore means "restart into the selected
+    /// mode" (a same-scheduler switch in loader terms). In every other case
+    /// it stays a faithful restart of the original configuration.
+    fn restart_scheduler(&mut self) {
+        // Same staleness concern as in `start_or_switch`.
+        self.refresh_status();
+        let running = self
+            .status
+            .as_ref()
+            .and_then(|status| status.current.clone());
+        let custom_args = self
+            .status
+            .as_ref()
+            .is_some_and(|status| !status.args.is_empty());
+        let active_mode = self.status.as_ref().map(|status| status.mode);
+        let selected = self.selected_scheduler().map(str::to_owned);
+        let mode = self.selected_mode();
+
+        let mode_change = self.backend.capabilities().modes
+            && !custom_args
+            && running.is_some()
+            && running == selected
+            && active_mode != Some(mode);
+
+        if let (true, Some(sched)) = (mode_change, running) {
+            match self.backend.switch(&sched, mode) {
+                Ok(()) => {
+                    self.info(&format!("restarted {sched} in {} mode", mode_label(mode)));
+                }
+                Err(err) => self.error(&format!("restart {sched} failed: {err:#}")),
+            }
+            self.refresh_status();
+        } else {
+            self.act("restarted", |b| b.restart());
+        }
     }
 
     fn act(&mut self, ok_text: &str, op: impl FnOnce(&dyn SchedulerBackend) -> Result<()>) {
