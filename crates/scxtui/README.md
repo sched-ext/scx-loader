@@ -10,10 +10,6 @@
 
 </div>
 
-<p align="center">
-  <img src="assets/scxtui-schedulers.png" alt="scxtui scheduler view" width="900">
-</p>
-
 `scxtui` provides an interactive view of the available `sched_ext` schedulers.
 It can start and switch schedulers, select operating modes, inspect the
 current state, restore the configured default, browse journal logs, and
