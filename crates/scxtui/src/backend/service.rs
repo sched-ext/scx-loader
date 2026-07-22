@@ -14,6 +14,7 @@
 //! root. Both paths fail with messages that say so instead of guessing.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -116,10 +117,29 @@ impl ServiceBackend {
         })?;
         // `fs::write` creates the temp file with the process umask; carry
         // the original config's permissions over so the rename cannot widen
-        // access to a file the admin keeps tightened (e.g. 0600).
-        if let Ok(meta) = fs::metadata(&self.config_path) {
-            fs::set_permissions(&tmp, meta.permissions())
-                .with_context(|| format!("cannot preserve permissions on {}", tmp.display()))?;
+        // access to a file the admin keeps tightened (e.g. 0600). A missing
+        // config is fine (first-time creation keeps the defaults), but any
+        // other metadata failure aborts: this block exists to protect
+        // permissions, so it must fail closed rather than rename blindly.
+        match fs::metadata(&self.config_path) {
+            Ok(meta) => {
+                fs::set_permissions(&tmp, meta.permissions()).with_context(|| {
+                    format!(
+                        "cannot preserve permissions from {} on {}",
+                        self.config_path.display(),
+                        tmp.display()
+                    )
+                })?;
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "cannot read permissions from {}",
+                        self.config_path.display()
+                    )
+                });
+            }
         }
         fs::rename(&tmp, &self.config_path)
             .with_context(|| format!("cannot move {} into place", tmp.display()))
