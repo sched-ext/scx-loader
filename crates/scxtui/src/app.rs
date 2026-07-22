@@ -364,7 +364,12 @@ or your distro's scx tools package)",
                 self.refresh_modes();
                 self.info(&format!("switched to {} backend", self.backend.label()));
             }
-            Err(err) => self.error(&format!("cannot switch backend: {err:#}")),
+            Err(err) => {
+                let label = self.backend.label();
+                self.error(&format!(
+                    "cannot switch backend: {err:#} (staying on {label})"
+                ));
+            }
         }
     }
 
