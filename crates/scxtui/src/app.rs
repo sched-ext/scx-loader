@@ -276,7 +276,11 @@ or your distro's scx tools package)",
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('l') => self.open_logs(),
-            KeyCode::Char('t') => self.pending_action = Some(PendingAction::Monitor),
+            KeyCode::Char('t') => {
+                if self.action_allowed() {
+                    self.pending_action = Some(PendingAction::Monitor);
+                }
+            }
             KeyCode::Char('B') => {
                 if self.action_allowed() {
                     self.queue(PendingAction::ToggleBackend);
@@ -556,11 +560,13 @@ or your distro's scx tools package)",
         self.refresh_status();
     }
 
+    /// Deliberately never touches the message bar: the status panel has
+    /// its own channel for a failed query (`State: unknown` in red via
+    /// `status = None`), and writing an error here would clobber a fresh
+    /// action result — the action can succeed while the follow-up poll
+    /// fails, and the user should still see the success.
     fn refresh_status(&mut self) {
-        match self.backend.status() {
-            Ok(status) => self.status = Some(status),
-            Err(err) => self.error(&format!("status query failed: {err:#}")),
-        }
+        self.status = self.backend.status().ok();
         self.kernel = kernel::read();
     }
 

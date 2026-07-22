@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
+#![deny(unsafe_code)]
+
 mod app;
 mod backend;
 mod kernel;

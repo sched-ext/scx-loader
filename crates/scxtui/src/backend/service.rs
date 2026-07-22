@@ -114,6 +114,13 @@ impl ServiceBackend {
                 tmp.display()
             )
         })?;
+        // `fs::write` creates the temp file with the process umask; carry
+        // the original config's permissions over so the rename cannot widen
+        // access to a file the admin keeps tightened (e.g. 0600).
+        if let Ok(meta) = fs::metadata(&self.config_path) {
+            fs::set_permissions(&tmp, meta.permissions())
+                .with_context(|| format!("cannot preserve permissions on {}", tmp.display()))?;
+        }
         fs::rename(&tmp, &self.config_path)
             .with_context(|| format!("cannot move {} into place", tmp.display()))
     }
@@ -172,7 +179,14 @@ fn scan_dirs(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
         };
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with("scx_") && name != "scx_loader" && entry.path().is_file() {
+            // These names end up verbatim in the service config file, so
+            // beyond the prefix filter, restrict them to a conservative
+            // character set — a stray `scx_$(...)` in PATH must never
+            // travel into `SCX_SCHEDULER=`.
+            let clean = name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+            if clean && name.starts_with("scx_") && name != "scx_loader" && entry.path().is_file() {
                 found.insert(name);
             }
         }
