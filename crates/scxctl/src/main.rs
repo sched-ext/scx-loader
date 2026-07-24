@@ -30,28 +30,22 @@ fn cmd_get(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-fn cmd_list(scx_loader: &LoaderClientProxyBlocking) {
-    match scx_loader.supported_schedulers() {
-        Ok(sl) => {
-            let supported_scheds = sl
-                .iter()
-                .map(|s| remove_scx_prefix(s))
-                .collect::<Vec<String>>();
-            println!("supported schedulers: {supported_scheds:?}");
-        }
-        Err(e) => {
-            eprintln!("scheduler list failed: {e}");
-            exit(1);
-        }
-    }
+fn cmd_list(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::error::Error>> {
+    let supported_scheds = scx_loader
+        .supported_schedulers()?
+        .iter()
+        .map(|s| remove_scx_prefix(s))
+        .collect::<Vec<String>>();
+    println!("supported schedulers: {supported_scheds:?}");
+    Ok(())
 }
 
 fn cmd_modes(
     scx_loader: &LoaderClientProxyBlocking,
-    sched_name: String,
+    sched_name: &str,
     show_args: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let sched: SupportedSched = validate_sched(scx_loader, sched_name);
+    let sched: SupportedSched = validate_sched(scx_loader, sched_name)?;
 
     if show_args {
         let mode_args: Vec<(SchedMode, Vec<String>)> =
@@ -123,24 +117,24 @@ fn check_mode_configured(
 
 fn cmd_start(
     scx_loader: &LoaderClientProxyBlocking,
-    sched_name: String,
+    sched_name: &str,
     mode_name: Option<SchedMode>,
     args: Option<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Verify scx_loader is not running a scheduler
     let current_scheduler = scx_loader.current_scheduler()?;
     if current_scheduler != "unknown" {
-        println!(
+        eprintln!(
             "{} scx scheduler already running, use '{}' instead of '{}'",
             "error:".red().bold(),
             "switch".bold(),
             "start".bold()
         );
-        println!("\nFor more information, try '{}'", "--help".bold());
+        eprintln!("\nFor more information, try '{}'", "--help".bold());
         exit(1);
     }
 
-    let sched: SupportedSched = validate_sched(scx_loader, sched_name);
+    let sched: SupportedSched = validate_sched(scx_loader, sched_name)?;
     let mode: SchedMode = mode_name.unwrap_or(SchedMode::Auto);
     if let Some(args) = args {
         scx_loader.start_scheduler_with_args(sched.clone(), &args)?;
@@ -187,20 +181,20 @@ fn resolve_switch_mode<E>(
 
 fn cmd_switch(
     scx_loader: &LoaderClientProxyBlocking,
-    sched_name: Option<String>,
+    sched_name: Option<&str>,
     mode_name: Option<SchedMode>,
     args: Option<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Verify scx_loader is running a scheduler
     let current_sched_name = scx_loader.current_scheduler()?;
     if current_sched_name == "unknown" {
-        println!(
+        eprintln!(
             "{} no scx scheduler running, use '{}' instead of '{}'",
             "error:".red().bold(),
             "start".bold(),
             "switch".bold()
         );
-        println!("\nFor more information, try '{}'", "--help".bold());
+        eprintln!("\nFor more information, try '{}'", "--help".bold());
         exit(1);
     }
 
@@ -213,7 +207,7 @@ fn cmd_switch(
     // a comparison whose answer is already known to be `false`.
     let (sched, switching_scheduler): (SupportedSched, bool) = match sched_name {
         Some(sched_name) => {
-            let sched = validate_sched(scx_loader, sched_name);
+            let sched = validate_sched(scx_loader, sched_name)?;
             let switching_scheduler = sched != current_sched;
             (sched, switching_scheduler)
         }
@@ -253,8 +247,8 @@ fn cmd_restore(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std
     // Check if a default scheduler is configured
     let default_scheduler = scx_loader.default_scheduler()?;
     if default_scheduler == "unknown" {
-        println!("{} no default scheduler configured", "error:".red().bold());
-        println!(
+        eprintln!("{} no default scheduler configured", "error:".red().bold());
+        eprintln!(
             "\nSet '{}' in your config file to use this command",
             "default_sched".bold()
         );
@@ -284,10 +278,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Get => cmd_get(&scx_loader)?,
-        Commands::List => cmd_list(&scx_loader),
-        Commands::Modes { args } => cmd_modes(&scx_loader, args.sched, args.show_args)?,
-        Commands::Start { args } => cmd_start(&scx_loader, args.sched, args.mode, args.args)?,
-        Commands::Switch { args } => cmd_switch(&scx_loader, args.sched, args.mode, args.args)?,
+        Commands::List => cmd_list(&scx_loader)?,
+        Commands::Modes { args } => cmd_modes(&scx_loader, &args.sched, args.show_args)?,
+        Commands::Start { args } => cmd_start(&scx_loader, &args.sched, args.mode, args.args)?,
+        Commands::Switch { args } => {
+            cmd_switch(&scx_loader, args.sched.as_deref(), args.mode, args.args)?;
+        }
         Commands::Stop => cmd_stop(&scx_loader)?,
         Commands::Restart => cmd_restart(&scx_loader)?,
         Commands::Restore => cmd_restore(&scx_loader)?,
@@ -302,11 +298,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 const SCHED_PREFIX: &str = "scx_";
 
-fn ensure_scx_prefix(input: String) -> String {
-    if !input.starts_with(SCHED_PREFIX) {
-        return format!("{SCHED_PREFIX}{input}");
+fn ensure_scx_prefix(input: &str) -> String {
+    if input.starts_with(SCHED_PREFIX) {
+        return input.to_string();
     }
-    input
+    format!("{SCHED_PREFIX}{input}")
 }
 
 fn remove_scx_prefix(input: &str) -> String {
@@ -316,25 +312,68 @@ fn remove_scx_prefix(input: &str) -> String {
     input.to_string()
 }
 
-fn validate_sched(scx_loader: &LoaderClientProxyBlocking, sched: String) -> SupportedSched {
-    let raw_supported_scheds: Vec<String> = scx_loader.supported_schedulers().unwrap();
-    let supported_scheds: Vec<String> = raw_supported_scheds
-        .iter()
-        .map(|s| remove_scx_prefix(s))
-        .collect();
-    if !supported_scheds.contains(&sched) && !raw_supported_scheds.contains(&sched) {
-        println!(
-            "{} invalid value '{}' for '{}'",
-            "error:".red().bold(),
-            sched.yellow(),
-            "--sched <SCHED>".bold()
-        );
-        println!("supported schedulers: {supported_scheds:?}");
-        println!("\nFor more information, try '{}'", "--help".bold());
-        exit(1);
-    }
+/// Why a user-supplied scheduler name failed to resolve.
+#[derive(Debug, PartialEq)]
+enum SchedNameError {
+    /// The name isn't on the list of schedulers reported by `scx_loader`.
+    UnknownName,
+    /// `scx_loader` reports the scheduler as supported, but this `scxctl`
+    /// build doesn't have a matching `SupportedSched` variant (e.g. a newer
+    /// `scx_loader` paired with an older `scxctl`).
+    UnsupportedByClient,
+}
 
-    SupportedSched::try_from(ensure_scx_prefix(sched).as_str()).unwrap()
+/// Resolves a user-supplied scheduler name (with or without the "scx_"
+/// prefix) against the list of supported schedulers reported by
+/// `scx_loader`.
+///
+/// Pure by design: the D-Bus call stays in `validate_sched`, so the actual
+/// resolution rules can be unit-tested without a running daemon.
+fn resolve_sched_name(
+    sched: &str,
+    raw_supported_scheds: &[String],
+) -> Result<SupportedSched, SchedNameError> {
+    let known = raw_supported_scheds
+        .iter()
+        .any(|raw| raw.as_str() == sched || remove_scx_prefix(raw) == sched);
+    if !known {
+        return Err(SchedNameError::UnknownName);
+    }
+    SupportedSched::try_from(ensure_scx_prefix(sched).as_str())
+        .map_err(|_| SchedNameError::UnsupportedByClient)
+}
+
+fn validate_sched(
+    scx_loader: &LoaderClientProxyBlocking,
+    sched: &str,
+) -> Result<SupportedSched, Box<dyn std::error::Error>> {
+    let raw_supported_scheds: Vec<String> = scx_loader.supported_schedulers()?;
+    match resolve_sched_name(sched, &raw_supported_scheds) {
+        Ok(resolved) => Ok(resolved),
+        Err(SchedNameError::UnknownName) => {
+            let supported_scheds: Vec<String> = raw_supported_scheds
+                .iter()
+                .map(|s| remove_scx_prefix(s))
+                .collect();
+            eprintln!(
+                "{} invalid value '{}' for '{}'",
+                "error:".red().bold(),
+                sched.yellow(),
+                "--sched <SCHED>".bold()
+            );
+            eprintln!("supported schedulers: {supported_scheds:?}");
+            eprintln!("\nFor more information, try '{}'", "--help".bold());
+            exit(1);
+        }
+        Err(SchedNameError::UnsupportedByClient) => {
+            eprintln!(
+                "{} scx_loader supports '{}', but this scxctl build does not; update scxctl",
+                "error:".red().bold(),
+                sched.yellow()
+            );
+            exit(1);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -374,5 +413,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mode, SchedMode::PowerSave);
+    }
+
+    fn reported_scheds() -> Vec<String> {
+        vec!["scx_bpfland".to_string(), "scx_lavd".to_string()]
+    }
+
+    #[test]
+    fn resolves_sched_name_with_prefix() {
+        assert_eq!(
+            resolve_sched_name("scx_lavd", &reported_scheds()),
+            Ok(SupportedSched::Lavd)
+        );
+    }
+
+    #[test]
+    fn resolves_sched_name_without_prefix() {
+        assert_eq!(
+            resolve_sched_name("bpfland", &reported_scheds()),
+            Ok(SupportedSched::Bpfland)
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_sched_name() {
+        assert_eq!(
+            resolve_sched_name("notreal", &reported_scheds()),
+            Err(SchedNameError::UnknownName)
+        );
+    }
+
+    #[test]
+    fn rejects_sched_known_to_daemon_but_not_client() {
+        // A newer scx_loader can report a scheduler this scxctl build has no
+        // SupportedSched variant for. That used to be an unwrap panic; it
+        // must resolve to a distinct, actionable error instead.
+        let reported = vec!["scx_from_the_future".to_string()];
+        assert_eq!(
+            resolve_sched_name("from_the_future", &reported),
+            Err(SchedNameError::UnsupportedByClient)
+        );
     }
 }
