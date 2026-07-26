@@ -133,7 +133,7 @@ pub struct App {
 impl App {
     pub fn new(kind: BackendKind, backend: Box<dyn SchedulerBackend>) -> Result<Self> {
         let schedulers = backend.supported_schedulers()?;
-        let mut app = Self {
+        let app = Self {
             backend,
             backend_kind: kind,
             schedulers,
@@ -153,8 +153,9 @@ impl App {
             pending_action: None,
             should_quit: false,
         };
-        app.refresh_status();
-        app.refresh_modes();
+        // No initial status/modes fetch here: `run` draws the first frame
+        // with the scheduler list alone and fetches right after, so the UI
+        // appears immediately instead of waiting on D-Bus round-trips.
         Ok(app)
     }
 
@@ -187,8 +188,23 @@ impl App {
 
     pub fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
         let mut last_refresh = Instant::now();
+        let mut primed = false;
         while !self.should_quit {
             terminal.draw(|frame| ui::draw(frame, self))?;
+
+            // First frame is a skeleton: scheduler list only, status panel
+            // in its "unknown" placeholder. The initial fetch happens right
+            // after it is on screen and the immediate redraw fills it in —
+            // on a healthy system that is a single-digit-ms flicker, and on
+            // a slow daemon the user at least sees a live UI instead of a
+            // blank terminal.
+            if !primed {
+                primed = true;
+                self.refresh_status();
+                self.refresh_modes();
+                last_refresh = Instant::now();
+                continue;
+            }
 
             // Execute a queued action only after the frame announcing it
             // ("working…") has been drawn, then redraw immediately so the
