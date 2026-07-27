@@ -136,7 +136,8 @@ fn cmd_start(
 
     let sched: SupportedSched = validate_sched(scx_loader, sched_name)?;
     let mode: SchedMode = mode_name.unwrap_or(SchedMode::Auto);
-    if let Some(args) = args {
+    if let Some(raw_args) = args {
+        let args = validate_args(&raw_args);
         scx_loader.start_scheduler_with_args(sched.clone(), &args)?;
         println!("started {sched:?} with arguments \"{}\"", args.join(" "));
     } else {
@@ -217,7 +218,8 @@ fn cmd_switch(
     let mode = resolve_switch_mode(mode_name, switching_scheduler, || {
         scx_loader.scheduler_mode()
     })?;
-    if let Some(args) = args {
+    if let Some(raw_args) = args {
+        let args = validate_args(&raw_args);
         scx_loader.switch_scheduler_with_args(sched.clone(), &args)?;
         println!(
             "switched to {sched:?} with arguments \"{}\"",
@@ -310,6 +312,80 @@ fn remove_scx_prefix(input: &str) -> String {
         return strip_input.to_string();
     }
     input.to_string()
+}
+
+/// Why user-supplied `--args` failed to expand into scheduler arguments.
+#[derive(Debug, PartialEq)]
+enum ArgsExpandError {
+    /// A chunk failed shell-style parsing, e.g. an unclosed quote. This
+    /// also covers quotes that span a comma: clap splits on ',' before
+    /// quoting is interpreted, so each side of the comma arrives here as
+    /// its own unbalanced chunk. The payload is a display-ready message.
+    Parse(String),
+    /// The input expanded to zero arguments (e.g. `--args '   '`). Passing
+    /// an empty argument list to `StartSchedulerWithArgs` would silently
+    /// mean something other than what the user typed, so the client
+    /// rejects it instead of forwarding it to the daemon.
+    Empty,
+}
+
+/// Expands the clap-split `--args` chunks into the final argument list
+/// passed to `scx_loader`.
+///
+/// clap first splits the raw input on commas (`value_delimiter(',')`,
+/// kept for compatibility with the historical format); each resulting
+/// chunk is then shell-split via `shell-words`, and the results are
+/// flattened in order. Consequences, deliberately:
+///
+/// - unquoted comma-separated input behaves exactly as before,
+/// - whitespace inside one chunk now separates arguments,
+/// - quotes and backslashes are interpreted, not passed through
+///   literally (`"--name \"foo bar\""` yields two tokens, the second
+///   containing a space),
+/// - a quoted region containing a comma cannot survive clap's earlier
+///   split and surfaces as a parse error rather than silent garbage.
+///
+/// Pure by design, mirroring `resolve_sched_name`: no D-Bus and no
+/// process exit, so the semantics can be unit-tested — and mirrored by
+/// other clients — without a running daemon.
+fn expand_scheduler_args(raw: &[String]) -> Result<Vec<String>, ArgsExpandError> {
+    let mut expanded = Vec::new();
+    for chunk in raw {
+        let tokens = shell_words::split(chunk)
+            .map_err(|err| ArgsExpandError::Parse(format!("{err} in '{chunk}'")))?;
+        expanded.extend(tokens);
+    }
+    if expanded.is_empty() {
+        return Err(ArgsExpandError::Empty);
+    }
+    Ok(expanded)
+}
+
+fn validate_args(raw: &[String]) -> Vec<String> {
+    match expand_scheduler_args(raw) {
+        Ok(args) => args,
+        Err(ArgsExpandError::Parse(msg)) => {
+            eprintln!(
+                "{} invalid value for '{}': {msg}",
+                "error:".red().bold(),
+                "--args <ARGS>".bold()
+            );
+            eprintln!("\nQuotes must be balanced and cannot span a comma");
+            exit(1);
+        }
+        Err(ArgsExpandError::Empty) => {
+            eprintln!(
+                "{} '{}' expanded to no arguments",
+                "error:".red().bold(),
+                "--args <ARGS>".bold()
+            );
+            eprintln!(
+                "\nTo run a scheduler with its own defaults, omit '{}'",
+                "--args".bold()
+            );
+            exit(1);
+        }
+    }
 }
 
 /// Why a user-supplied scheduler name failed to resolve.
@@ -440,6 +516,84 @@ mod tests {
         assert_eq!(
             resolve_sched_name("notreal", &reported_scheds()),
             Err(SchedNameError::UnknownName)
+        );
+    }
+
+    /*
+     * Shared --args semantics vector.
+     *
+     * Both scxctl and scxtui depend on shell-words directly and must
+     * agree on these outcomes; there is deliberately no shared helper
+     * crate. When touching this table, copy it verbatim into the scxtui
+     * custom-args tests (and vice versa).
+     *
+     * Inputs are the chunks as produced by clap's value_delimiter(','),
+     * i.e. already comma-split.
+     */
+    #[test]
+    fn args_expansion_shared_vector_ok() {
+        let cases: &[(&[&str], &[&str])] = &[
+            // Comma style (the historical documented format): unchanged.
+            (&["--slice-us", "5000"], &["--slice-us", "5000"]),
+            // Whitespace inside a single chunk now separates arguments.
+            (
+                &["--verbose --slice-us 5000"],
+                &["--verbose", "--slice-us", "5000"],
+            ),
+            // Mixed: comma split first (clap), then shell split per chunk.
+            (
+                &["--verbose", "--slice-us 5000"],
+                &["--verbose", "--slice-us", "5000"],
+            ),
+            // Double quotes are interpreted: value with a space stays one token.
+            (&["--name \"foo bar\""], &["--name", "foo bar"]),
+            // Single quotes likewise.
+            (&["--name 'foo bar'"], &["--name", "foo bar"]),
+            // Backslash escapes a space.
+            (&["--path /tmp/a\\ b"], &["--path", "/tmp/a b"]),
+            // An explicit empty token is explicit: passed through as-is.
+            (&["\"\""], &[""]),
+        ];
+        for (input, expected) in cases {
+            let input: Vec<String> = input.iter().map(|s| s.to_string()).collect();
+            let expected: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+            assert_eq!(
+                expand_scheduler_args(&input),
+                Ok(expected),
+                "input: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn args_expansion_shared_vector_errors() {
+        // An unclosed quote in a chunk is a parse error.
+        let unclosed = vec!["--name \"foo".to_string()];
+        assert!(matches!(
+            expand_scheduler_args(&unclosed),
+            Err(ArgsExpandError::Parse(_))
+        ));
+
+        // A quoted region spanning a comma cannot survive clap's earlier
+        // comma split: each side arrives as an unbalanced chunk. Surfacing
+        // a parse error here (instead of silently mangled tokens) is the
+        // intended behavior.
+        let quote_spanning_comma = vec!["\"foo".to_string(), "bar\"".to_string()];
+        assert!(matches!(
+            expand_scheduler_args(&quote_spanning_comma),
+            Err(ArgsExpandError::Parse(_))
+        ));
+
+        // Whitespace-only input expands to nothing: rejected client-side
+        // instead of sending an empty list to the daemon.
+        let blank = vec!["   ".to_string()];
+        assert_eq!(expand_scheduler_args(&blank), Err(ArgsExpandError::Empty));
+
+        // clap turns `--args ""` into a single empty chunk; same outcome.
+        let empty_chunk = vec![String::new()];
+        assert_eq!(
+            expand_scheduler_args(&empty_chunk),
+            Err(ArgsExpandError::Empty)
         );
     }
 

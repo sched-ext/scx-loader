@@ -28,7 +28,7 @@ pub struct StartArgs {
         value_delimiter(','),
         requires = "sched",
         conflicts_with = "mode",
-        help = "Arguments to run scheduler with"
+        help = "Arguments to run scheduler with (comma-separated and/or shell-quoted, e.g. \"--verbose --slice-us 5000\")"
     )]
     pub args: Option<Vec<String>>,
 }
@@ -52,7 +52,7 @@ pub struct SwitchArgs {
         value_delimiter(','),
         requires = "sched",
         conflicts_with = "mode",
-        help = "Arguments to run scheduler with"
+        help = "Arguments to run scheduler with (comma-separated and/or shell-quoted, e.g. \"--verbose --slice-us 5000\")"
     )]
     pub args: Option<Vec<String>>,
 }
