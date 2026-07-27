@@ -566,8 +566,8 @@ mod tests {
             (&["--name \"\""], &["--name", ""]),
         ];
         for (input, expected) in cases {
-            let input: Vec<String> = input.iter().map(|s| s.to_string()).collect();
-            let expected: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+            let input: Vec<String> = input.iter().map(ToString::to_string).collect();
+            let expected: Vec<String> = expected.iter().map(ToString::to_string).collect();
             assert_eq!(
                 expand_scheduler_args(&input),
                 Ok(expected),
