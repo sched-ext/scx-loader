@@ -488,8 +488,12 @@ or your distro's scx tools package)",
     /// what the user sees instead of on `schedulers[0]` + `Auto`. Only
     /// called on startup and after a backend switch — never on the
     /// periodic refresh, which must not fight the user's own selection.
-    /// Skipped when the scheduler runs with custom args: no mode selector
-    /// position represents that state.
+    ///
+    /// All-or-nothing: a running scheduler outside the advertised list
+    /// (hand-launched next to the loader) leaves *both* selectors alone —
+    /// syncing only the mode would pair the foreign scheduler's mode with
+    /// an unrelated selection. The mode half is additionally skipped for
+    /// custom args, since no selector position represents that state.
     fn sync_selection_to_running(&mut self) {
         let Some(status) = &self.status else {
             return;
@@ -497,9 +501,10 @@ or your distro's scx tools package)",
         let Some(current) = &status.current else {
             return;
         };
-        if let Some(idx) = self.schedulers.iter().position(|s| s == current) {
-            self.selected = idx;
-        }
+        let Some(idx) = self.schedulers.iter().position(|s| s == current) else {
+            return;
+        };
+        self.selected = idx;
         if status.args.is_empty() {
             if let Some(idx) = MODES.iter().position(|m| *m == status.mode) {
                 self.mode_idx = idx;
@@ -777,13 +782,16 @@ mod tests {
     }
 
     #[test]
-    fn sync_with_unknown_scheduler_keeps_previous_selection() {
+    fn sync_with_unknown_scheduler_is_a_full_no_op() {
         // A hand-launched scheduler outside the advertised list must not
-        // panic or clobber the selection.
+        // touch either selector: syncing only the mode would pair the
+        // foreign scheduler's mode with an unrelated selection.
         let mut app = app_with_status(running("scx_homebrew", SchedMode::Server, &[]));
         app.selected = 1;
+        app.mode_idx = 1;
         app.sync_selection_to_running();
         assert_eq!(app.selected_scheduler(), Some("scx_lavd"));
+        assert_eq!(app.selected_mode(), SchedMode::Gaming);
     }
 
     #[test]
