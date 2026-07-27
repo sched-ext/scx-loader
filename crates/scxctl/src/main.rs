@@ -317,10 +317,8 @@ fn remove_scx_prefix(input: &str) -> String {
     input.to_string()
 }
 
-/// Formats an argument vector so token boundaries remain visible and the
-/// result can be pasted back into a shell (or into `--args`) without
-/// changing its meaning. Symmetric with `expand_scheduler_args`: what
-/// `shell_words::split` took apart, `shell_words::join` renders back.
+/// Formats an argument vector as a shell command line so token boundaries
+/// remain visible.
 fn format_scheduler_args(args: &[String]) -> String {
     shell_words::join(args)
 }
@@ -348,7 +346,7 @@ enum ArgsExpandError {
 /// chunk is then shell-split via `shell-words`, and the results are
 /// flattened in order. Consequences, deliberately:
 ///
-/// - unquoted comma-separated input behaves exactly as before,
+/// - the historical comma-separated syntax remains supported,
 /// - whitespace inside one chunk now separates arguments,
 /// - quotes and backslashes are interpreted, not passed through
 ///   literally (`"--name \"foo bar\""` yields two tokens, the second
@@ -544,7 +542,7 @@ mod tests {
     #[test]
     fn args_expansion_shared_vector_ok() {
         let cases: &[(&[&str], &[&str])] = &[
-            // Comma style (the historical documented format): unchanged.
+            // Comma style (the historical documented format): still supported.
             (&["--slice-us", "5000"], &["--slice-us", "5000"]),
             // Whitespace inside a single chunk now separates arguments.
             (
@@ -645,11 +643,12 @@ mod tests {
         );
     }
 
-    /// What `format_scheduler_args` renders must parse back into the very
-    /// same tokens, including empty strings and embedded quotes.
+    /// What `format_scheduler_args` renders must parse back into the same
+    /// tokens when passed directly to `shell_words::split`, including empty
+    /// strings, embedded quotes, and commas.
     #[test]
     fn scheduler_args_format_round_trips() {
-        let args = ["--name", "foo bar", "", "a'b"]
+        let args = ["--name", "foo bar", "", "a'b", "foo,bar"]
             .map(str::to_string)
             .to_vec();
         let formatted = format_scheduler_args(&args);
