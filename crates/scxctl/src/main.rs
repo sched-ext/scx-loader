@@ -23,7 +23,7 @@ fn cmd_get(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::er
         } else {
             println!(
                 "running {sched:?} with arguments \"{}\"",
-                current_args.join(" ")
+                format_scheduler_args(&current_args)
             );
         }
     }
@@ -139,7 +139,10 @@ fn cmd_start(
     if let Some(raw_args) = args {
         let args = validate_args(&raw_args);
         scx_loader.start_scheduler_with_args(sched.clone(), &args)?;
-        println!("started {sched:?} with arguments \"{}\"", args.join(" "));
+        println!(
+            "started {sched:?} with arguments \"{}\"",
+            format_scheduler_args(&args)
+        );
     } else {
         let mode_configured = check_mode_configured(scx_loader, &sched, mode);
         scx_loader.start_scheduler(sched.clone(), mode)?;
@@ -223,7 +226,7 @@ fn cmd_switch(
         scx_loader.switch_scheduler_with_args(sched.clone(), &args)?;
         println!(
             "switched to {sched:?} with arguments \"{}\"",
-            args.join(" ")
+            format_scheduler_args(&args)
         );
     } else {
         let mode_configured = check_mode_configured(scx_loader, &sched, mode);
@@ -312,6 +315,14 @@ fn remove_scx_prefix(input: &str) -> String {
         return strip_input.to_string();
     }
     input.to_string()
+}
+
+/// Formats an argument vector so token boundaries remain visible and the
+/// result can be pasted back into a shell (or into `--args`) without
+/// changing its meaning. Symmetric with `expand_scheduler_args`: what
+/// `shell_words::split` took apart, `shell_words::join` renders back.
+fn format_scheduler_args(args: &[String]) -> String {
+    shell_words::join(args)
 }
 
 /// Why user-supplied `--args` failed to expand into scheduler arguments.
@@ -553,6 +564,8 @@ mod tests {
             (&["--path /tmp/a\\ b"], &["--path", "/tmp/a b"]),
             // An explicit empty token is explicit: passed through as-is.
             (&["\"\""], &[""]),
+            // Empty values remain visible when attached to another option.
+            (&["--name \"\""], &["--name", ""]),
         ];
         for (input, expected) in cases {
             let input: Vec<String> = input.iter().map(|s| s.to_string()).collect();
@@ -595,6 +608,53 @@ mod tests {
             expand_scheduler_args(&empty_chunk),
             Err(ArgsExpandError::Empty)
         );
+    }
+
+    /// Pins the actual clap behavior the shared vector assumes: the raw
+    /// input is comma-split by `value_delimiter(',')` before expansion,
+    /// and the `--args=VALUE` form carries values starting with a dash.
+    #[test]
+    fn args_expansion_matches_clap_output() {
+        use clap::Parser as _;
+
+        let cli = Cli::try_parse_from([
+            "scxctl",
+            "start",
+            "--sched",
+            "bpfland",
+            "--args=-s 20000,-m powersave,-I 100,-t 100",
+        ])
+        .expect("mixed shell-style and comma-separated arguments should parse");
+
+        let Commands::Start { args } = cli.command else {
+            panic!("expected start command");
+        };
+        let raw_args = args.args.expect("--args should be present");
+
+        assert_eq!(
+            raw_args,
+            ["-s 20000", "-m powersave", "-I 100", "-t 100"]
+                .map(str::to_string)
+                .to_vec()
+        );
+        assert_eq!(
+            expand_scheduler_args(&raw_args),
+            Ok(["-s", "20000", "-m", "powersave", "-I", "100", "-t", "100"]
+                .map(str::to_string)
+                .to_vec())
+        );
+    }
+
+    /// What `format_scheduler_args` renders must parse back into the very
+    /// same tokens, including empty strings and embedded quotes.
+    #[test]
+    fn scheduler_args_format_round_trips() {
+        let args = ["--name", "foo bar", "", "a'b"]
+            .map(str::to_string)
+            .to_vec();
+        let formatted = format_scheduler_args(&args);
+
+        assert_eq!(shell_words::split(&formatted), Ok(args));
     }
 
     #[test]
