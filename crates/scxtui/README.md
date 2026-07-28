@@ -1,4 +1,10 @@
-<div align="center">
+<p align="center">
+  <img
+    src="assets/scxtui-logo.png"
+    alt="scxtui logo"
+    width="420"
+  >
+</p>
 
 # scxtui
 
@@ -144,10 +150,6 @@ operations the active backend does not support are disabled and hidden from
 the key bar.
 
 ### Log view
-
-<p align="center">
-  <img src="assets/scxtui-logs.png" alt="scxtui journal log view" width="900">
-</p>
 
 | Key | Action |
 |---|---|

@@ -1,12 +1,14 @@
-# scx_loader & scxctl
+# scx_loader & scxctl & scxtui
 
 [![Crates.io](https://img.shields.io/crates/v/scx_loader.svg)](https://crates.io/crates/scx_loader)
 [![Crates.io](https://img.shields.io/crates/v/scxctl.svg)](https://crates.io/crates/scxctl)
+[![Crates.io](https://img.shields.io/crates/v/scxtui.svg)](https://crates.io/crates/scxtui)
 
 `scx_loader` is a system daemon and DBus-based loader for [sched_ext](https://github.com/sched-ext/scx) schedulers.
 `scxctl` is the command-line client for interacting with the loader, allowing users to switch schedulers, modes, and arguments dynamically.
+`scxtui` is an interactive terminal user interface for managing schedulers, inspecting the current loader state, and viewing recent scheduler logs.
 
-Both tools were originally part of the main `sched-ext/scx` repository and are now developed independently.
+These tools were originally part of the main `sched-ext/scx` repository and are now developed independently.
 
 ---
 
@@ -14,7 +16,10 @@ Both tools were originally part of the main `sched-ext/scx` repository and are n
 
 - Systemd service: `scx_loader.service`
 - DBus interface for scheduler management (`org.scx.Loader`)
-- CLI client `scxctl` for manual control
+- CLI client `scxctl` for scriptable and manual control
+- Interactive terminal client `scxtui` for scheduler management and status inspection
+- Start, switch, stop, restart, and restore schedulers from the terminal UI
+- View the active scheduler, mode, arguments, and recent journal entries
 - Multiple runtime modes (Auto, Gaming, LowLatency, PowerSave, Server)
 - Per-scheduler arguments via TOML configuration
 - Installable directly from crates.io or buildable from source
@@ -28,6 +33,7 @@ Both tools were originally part of the main `sched-ext/scx` repository and are n
 ```bash
 cargo install scx_loader
 cargo install scxctl
+cargo install scxtui
 ```
 
 The binaries will be installed in `~/.cargo/bin`.
@@ -54,6 +60,7 @@ Then install them system-wide:
 ```bash
 sudo install -Dm755 target/release/scx_loader /usr/bin/
 sudo install -Dm755 target/release/scxctl /usr/bin/
+sudo install -Dm755 target/release/scxtui /usr/bin/
 ```
 or
 
@@ -159,6 +166,28 @@ systemctl status scx_loader.service
 ## 💡 Using scxctl
 
 See: [scxctl](crates/scxctl/README.md)
+
+---
+
+## 🖥️ Using scxtui
+
+Launch the terminal interface with:
+
+```bash
+scxtui
+```
+
+`scxtui` provides an interactive view of the schedulers exposed by the active backend. It can be used to:
+
+- inspect the currently running scheduler, mode, and arguments;
+- select and start or switch schedulers and modes;
+- stop, restart, or restore the configured default scheduler;
+- refresh the scheduler list and runtime state;
+- inspect recent `scx_loader` journal entries.
+
+The interface discovers loader capabilities at runtime and degrades gracefully when optional D-Bus methods are unavailable.
+
+See: [scxtui](crates/scxtui/README.md)
 
 ---
 
