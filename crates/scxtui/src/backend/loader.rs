@@ -82,6 +82,10 @@ pub struct LoaderBackend {
     // The generated proxy holds its own reference to the connection,
     // so we don't need to keep the `Connection` around separately.
     proxy: LoaderProxyBlocking<'static>,
+    /// `org.freedesktop.DBus` proxy, kept for `GetNameOwner`: the unique
+    /// name of the current `org.scx.Loader` owner is the instance token
+    /// (see [`SchedulerBackend::instance_token`]).
+    dbus: DBusProxy<'static>,
     /// `org.freedesktop.DBus.Properties` proxy for the same object, used to
     /// fetch the whole status in a single `GetAll` round-trip instead of
     /// five per-property `Get`s (see [`SchedulerBackend::status`]).
@@ -158,6 +162,7 @@ is the scx_loader service installed?"
         Ok(Self {
             proxy,
             props,
+            dbus,
             initial_schedulers: RefCell::new(Some(schedulers)),
         })
     }
@@ -196,6 +201,18 @@ impl SchedulerBackend for LoaderBackend {
             modes: true,
             restore_default: true,
         }
+    }
+
+    /// One cheap round-trip to the bus daemon itself (not to `scx_loader`),
+    /// so it can ride along the periodic status refresh. A momentarily
+    /// unowned name maps to `None` — the caller keeps its caches and a
+    /// later successful read reports the (new) owner.
+    fn instance_token(&self) -> Option<String> {
+        let name = BusName::from_static_str(SERVICE).expect("valid bus name literal");
+        self.dbus
+            .get_name_owner(name)
+            .ok()
+            .map(|owner| owner.to_string())
     }
 
     /// One `GetAll` round-trip instead of five `Get`s. With property

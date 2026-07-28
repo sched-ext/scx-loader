@@ -58,6 +58,18 @@ pub trait SchedulerBackend {
     /// Short human-readable backend name for the status bar.
     fn label(&self) -> &'static str;
 
+    /// Opaque token identifying the live backend instance behind this
+    /// connection — for the loader, the unique bus name of the current
+    /// `org.scx.Loader` owner. The daemon reads its configuration once at
+    /// startup, so client-side caches of configuration answers stay valid
+    /// exactly as long as the token does: a changed token is a replaced
+    /// daemon. `None` means the backend has no such notion, or the owner
+    /// is momentarily unknown; callers should keep their caches on `None`
+    /// rather than dropping known-good data over a transient hiccup.
+    fn instance_token(&self) -> Option<String> {
+        None
+    }
+
     fn capabilities(&self) -> Capabilities;
 
     fn status(&self) -> Result<Status>;

@@ -2,6 +2,7 @@
 
 //! Application state and event loop.
 
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -30,17 +31,6 @@ pub const MODES: [SchedMode; 5] = [
 /// Lower-case mode name, matching the status panel and scxctl's CLI.
 fn mode_label(mode: SchedMode) -> &'static str {
     <&str>::from(mode)
-}
-
-/// Filters a [`ModeArgs`] answer down to the modes that count as
-/// configured: `Auto` always, anything else when its resolved argument
-/// list is non-empty.
-fn derive_configured(modes: ModeArgs) -> Vec<SchedMode> {
-    modes
-        .into_iter()
-        .filter(|(mode, args)| *mode == SchedMode::Auto || !args.is_empty())
-        .map(|(mode, _)| mode)
-        .collect()
 }
 
 /// How often the input poll wakes up to redraw / refresh.
@@ -124,8 +114,15 @@ pub struct App {
     /// The kernel's own view of `sched_ext`, refreshed alongside `status`.
     /// `None` = kernel without `sched_ext` support.
     pub kernel: Option<KernelState>,
-    /// Configured modes for the currently selected scheduler.
-    pub configured_modes: Vec<SchedMode>,
+    /// Lazily filled per-scheduler answers to the backend's mode-argument
+    /// query. An absent key means "not fetched yet or the query failed" —
+    /// never "nothing configured" — so consumers fail open on it. Valid
+    /// for the lifetime of one daemon instance; see
+    /// [`Self::check_daemon_instance`].
+    mode_args: HashMap<String, ModeArgs>,
+    /// Last observed backend instance token; a change invalidates
+    /// `mode_args`.
+    daemon_instance: Option<String>,
     pub message: Option<Message>,
     /// Timestamp of the last scheduler-affecting action, for debouncing.
     last_action: Option<Instant>,
@@ -158,7 +155,8 @@ impl App {
             mode_idx: 0,
             status: None,
             kernel: None,
-            configured_modes: Vec::new(),
+            mode_args: HashMap::new(),
+            daemon_instance: None,
             message: None,
             last_action: None,
             view: View::Schedulers,
@@ -193,14 +191,24 @@ impl App {
     }
 
     /// Whether the selected mode has configured arguments for the selected
-    /// scheduler. Mirrors scxctl's client-side warning: `Auto` always counts,
-    /// and an earlier query failure fails open (empty list is treated as
-    /// "unknown", not as "nothing configured") so we never scare the user
-    /// over a transient D-Bus hiccup.
+    /// scheduler. Mirrors scxctl's client-side warning: `Auto` always
+    /// counts, and an unknown answer (never fetched, or the query failed —
+    /// either way no cache entry) fails open so we never scare the user
+    /// over a transient D-Bus hiccup. A *successful* answer is exact: the
+    /// daemon reports every mode, so a mode missing its arguments there
+    /// genuinely has none configured.
     pub fn selected_mode_configured(&self) -> bool {
-        self.selected_mode() == SchedMode::Auto
-            || self.configured_modes.is_empty()
-            || self.configured_modes.contains(&self.selected_mode())
+        let mode = self.selected_mode();
+        if mode == SchedMode::Auto {
+            return true;
+        }
+        let Some(modes) = self
+            .selected_scheduler()
+            .and_then(|sched| self.mode_args.get(sched))
+        else {
+            return true;
+        };
+        modes.iter().any(|(m, args)| *m == mode && !args.is_empty())
     }
 
     pub fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
@@ -363,6 +371,9 @@ or your distro's scx tools package)",
                 // same rule as refresh_status not touching the message bar.
                 let list_ok = self.refresh_schedulers();
                 self.refresh_status();
+                // Manual refresh means "give me the current truth", so the
+                // lazy cache must not satisfy it with old answers.
+                self.mode_args.clear();
                 self.refresh_modes();
                 if list_ok {
                     self.info("refreshed");
@@ -413,6 +424,11 @@ or your distro's scx tools package)",
                 self.schedulers = schedulers;
                 self.selected = 0;
                 self.mode_idx = 0;
+                // Instance tokens are per-backend; comparing across
+                // backends would be meaningless, so both the cache and the
+                // observed token start over.
+                self.mode_args.clear();
+                self.daemon_instance = None;
                 self.refresh_status();
                 self.sync_selection_to_running();
                 self.refresh_modes();
@@ -652,6 +668,7 @@ or your distro's scx tools package)",
     fn refresh_status(&mut self) {
         self.status = self.backend.status().ok();
         self.kernel = kernel::read();
+        self.check_daemon_instance();
     }
 
     /// Re-enumerates the scheduler list. The list is otherwise fetched
@@ -676,25 +693,50 @@ or your distro's scx tools package)",
         }
     }
 
-    /// Configured modes are derived from the full per-mode argument query
-    /// (`SchedulerModeArgs`): `Auto` always counts, any other mode counts
-    /// when its resolved argument list is non-empty — the same rule the
-    /// daemon applies in `SchedulerModes`. Deriving locally lets a single
-    /// query serve both this indicator and an argument preview without a
-    /// second source of truth.
+    /// Lazily fills the per-scheduler argument cache. The daemon reads its
+    /// configuration once at startup, so a successful answer stays valid
+    /// until the daemon itself is replaced — which `check_daemon_instance`
+    /// watches for. A failed query is deliberately *not* cached: an absent
+    /// entry reads as "unknown" (fail open in `selected_mode_configured`)
+    /// and the next call here simply retries.
     fn refresh_modes(&mut self) {
-        self.configured_modes = match self.selected_scheduler() {
-            Some(sched) if self.backend.capabilities().modes => {
-                // Fail open: a successful answer always contains at least
-                // `Auto`, so an empty list still means "unknown" to
-                // `selected_mode_configured`, not "nothing configured".
-                self.backend
-                    .mode_args(sched)
-                    .map(derive_configured)
-                    .unwrap_or_default()
-            }
-            _ => Vec::new(),
+        if !self.backend.capabilities().modes {
+            return;
+        }
+        let Some(sched) = self.selected_scheduler() else {
+            return;
         };
+        if self.mode_args.contains_key(sched) {
+            return;
+        }
+        let sched = sched.to_owned();
+        if let Ok(modes) = self.backend.mode_args(&sched) {
+            self.mode_args.insert(sched, modes);
+        }
+    }
+
+    /// Detects a daemon restart via the backend's instance token and drops
+    /// the mode-argument cache when one happened. A replaced daemon is the
+    /// one event that can make cached configuration answers stale (the
+    /// daemon reads its config once at startup) — watching the config
+    /// file's mtime instead would be both weaker (an edit without a
+    /// restart changes nothing) and blind to a restart with an unchanged
+    /// file. Rides along the periodic status refresh, so an external
+    /// `systemctl restart scx_loader` is picked up within one poll even
+    /// though D-Bus activation hides it from the calls themselves.
+    fn check_daemon_instance(&mut self) {
+        let Some(token) = self.backend.instance_token() else {
+            return;
+        };
+        if self
+            .daemon_instance
+            .as_deref()
+            .is_some_and(|old| old != token)
+        {
+            self.mode_args.clear();
+            self.refresh_modes();
+        }
+        self.daemon_instance = Some(token);
     }
 
     fn info(&mut self, text: &str) {
@@ -716,17 +758,45 @@ or your distro's scx tools package)",
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use anyhow::anyhow;
+
     use super::*;
 
-    /// Minimal in-memory backend: enough for exercising selection logic
-    /// without a D-Bus connection.
+    /// Minimal in-memory backend: enough for exercising selection and
+    /// caching logic without a D-Bus connection.
     struct StubBackend {
         schedulers: Vec<String>,
+        /// Per-scheduler answer for `mode_args`; a missing key errors,
+        /// modeling a failed D-Bus query.
+        modes: HashMap<String, ModeArgs>,
+        /// How many times `mode_args` reached the backend, shared with the
+        /// test so caching is observable from the outside.
+        mode_queries: Rc<RefCell<usize>>,
+        /// Current instance token, shared so a test can "restart" the
+        /// daemon underneath the app.
+        token: Rc<RefCell<Option<String>>>,
+    }
+
+    impl StubBackend {
+        fn new() -> Self {
+            Self {
+                schedulers: vec!["scx_bpfland".into(), "scx_lavd".into(), "scx_cake".into()],
+                modes: HashMap::new(),
+                mode_queries: Rc::new(RefCell::new(0)),
+                token: Rc::new(RefCell::new(None)),
+            }
+        }
     }
 
     impl SchedulerBackend for StubBackend {
         fn label(&self) -> &'static str {
             "stub"
+        }
+        fn instance_token(&self) -> Option<String> {
+            self.token.borrow().clone()
         }
         fn capabilities(&self) -> Capabilities {
             Capabilities {
@@ -736,13 +806,26 @@ mod tests {
             }
         }
         fn status(&self) -> Result<Status> {
-            unreachable!("tests set App::status directly")
+            // Benign "nothing running" answer, so tests may drive paths
+            // that refresh the status; tests interested in a particular
+            // state still set `App::status` directly afterwards.
+            Ok(Status {
+                current: None,
+                mode: SchedMode::Auto,
+                args: Vec::new(),
+                default_sched: None,
+                default_mode: SchedMode::Auto,
+            })
         }
         fn supported_schedulers(&self) -> Result<Vec<String>> {
             Ok(self.schedulers.clone())
         }
-        fn mode_args(&self, _sched: &str) -> Result<ModeArgs> {
-            Ok(Vec::new())
+        fn mode_args(&self, sched: &str) -> Result<ModeArgs> {
+            *self.mode_queries.borrow_mut() += 1;
+            self.modes
+                .get(sched)
+                .cloned()
+                .ok_or_else(|| anyhow!("no mode answer configured for {sched}"))
         }
         fn start(&self, _sched: &str, _mode: SchedMode) -> Result<()> {
             Ok(())
@@ -761,13 +844,31 @@ mod tests {
         }
     }
 
+    /// Answer for the default selection (`scx_bpfland`): gaming has
+    /// arguments, powersave is present but empty, the rest untouched.
+    fn bpfland_modes() -> ModeArgs {
+        vec![
+            (SchedMode::Auto, Vec::new()),
+            (
+                SchedMode::Gaming,
+                vec!["-k".into(), "-s".into(), "5000".into()],
+            ),
+            (SchedMode::PowerSave, Vec::new()),
+        ]
+    }
+
+    fn app_with_backend(backend: StubBackend) -> App {
+        App::new(BackendKind::Loader, Box::new(backend)).unwrap()
+    }
+
     fn app_with_status(status: Status) -> App {
-        let backend = StubBackend {
-            schedulers: vec!["scx_bpfland".into(), "scx_lavd".into(), "scx_cake".into()],
-        };
-        let mut app = App::new(BackendKind::Loader, Box::new(backend)).unwrap();
+        let mut app = app_with_backend(StubBackend::new());
         app.status = Some(status);
         app
+    }
+
+    fn select_mode(app: &mut App, mode: SchedMode) {
+        app.mode_idx = MODES.iter().position(|m| *m == mode).unwrap();
     }
 
     fn running(current: &str, mode: SchedMode, args: &[&str]) -> Status {
@@ -778,6 +879,109 @@ mod tests {
             default_sched: None,
             default_mode: SchedMode::Auto,
         }
+    }
+
+    #[test]
+    fn configured_follows_the_cached_argument_lists() {
+        let mut backend = StubBackend::new();
+        backend.modes.insert("scx_bpfland".into(), bpfland_modes());
+        let mut app = app_with_backend(backend);
+        app.refresh_modes();
+
+        select_mode(&mut app, SchedMode::Auto);
+        assert!(app.selected_mode_configured(), "Auto always counts");
+        select_mode(&mut app, SchedMode::Gaming);
+        assert!(app.selected_mode_configured(), "non-empty arguments");
+        select_mode(&mut app, SchedMode::PowerSave);
+        assert!(
+            !app.selected_mode_configured(),
+            "present in the answer with an empty argument list"
+        );
+        select_mode(&mut app, SchedMode::Server);
+        assert!(
+            !app.selected_mode_configured(),
+            "absent from a successful answer means not configured"
+        );
+    }
+
+    #[test]
+    fn unknown_answer_fails_open() {
+        // No cache entry — the query failed and nothing was stored. Every
+        // mode must count as configured so a transient D-Bus hiccup never
+        // produces a scary warning.
+        let mut app = app_with_backend(StubBackend::new());
+        select_mode(&mut app, SchedMode::Server);
+        assert!(app.selected_mode_configured());
+    }
+
+    #[test]
+    fn cache_serves_repeat_queries() {
+        let mut backend = StubBackend::new();
+        backend.modes.insert("scx_bpfland".into(), bpfland_modes());
+        let queries = Rc::clone(&backend.mode_queries);
+        let mut app = app_with_backend(backend);
+
+        app.refresh_modes();
+        app.refresh_modes();
+        assert_eq!(*queries.borrow(), 1, "second call must hit the cache");
+    }
+
+    #[test]
+    fn failed_query_is_not_cached() {
+        // The stub has no answer for any scheduler, so every query fails.
+        let backend = StubBackend::new();
+        let queries = Rc::clone(&backend.mode_queries);
+        let mut app = app_with_backend(backend);
+
+        app.refresh_modes();
+        app.refresh_modes();
+        assert_eq!(
+            *queries.borrow(),
+            2,
+            "a failure must stay uncached so the next call retries"
+        );
+    }
+
+    #[test]
+    fn daemon_restart_clears_the_cache() {
+        let mut backend = StubBackend::new();
+        backend.modes.insert("scx_bpfland".into(), bpfland_modes());
+        let queries = Rc::clone(&backend.mode_queries);
+        let token = Rc::clone(&backend.token);
+        let mut app = app_with_backend(backend);
+
+        *token.borrow_mut() = Some(":1.7".into());
+        app.check_daemon_instance();
+        app.refresh_modes();
+        assert_eq!(*queries.borrow(), 1);
+
+        // Same daemon: the periodic check must not disturb the cache.
+        app.check_daemon_instance();
+        app.refresh_modes();
+        assert_eq!(*queries.borrow(), 1);
+
+        // "Restart" the daemon: new unique name, cache dropped and the
+        // selected scheduler refetched immediately.
+        *token.borrow_mut() = Some(":1.9".into());
+        app.check_daemon_instance();
+        assert_eq!(*queries.borrow(), 2);
+    }
+
+    #[test]
+    fn manual_refresh_bypasses_the_cache() {
+        let mut backend = StubBackend::new();
+        backend.modes.insert("scx_bpfland".into(), bpfland_modes());
+        let queries = Rc::clone(&backend.mode_queries);
+        let mut app = app_with_backend(backend);
+
+        app.refresh_modes();
+        assert_eq!(*queries.borrow(), 1);
+        app.on_key(KeyEvent::from(KeyCode::Char('R')));
+        assert_eq!(
+            *queries.borrow(),
+            2,
+            "R must refetch instead of serving the cache"
+        );
     }
 
     #[test]
