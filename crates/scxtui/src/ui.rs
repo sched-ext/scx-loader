@@ -144,6 +144,19 @@ fn draw_status_panel(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Span::raw("  (Tab to cycle)"),
         ]));
+        // Preview of what starting/switching in this mode would actually
+        // pass to the scheduler. Rendered only when the answer is known
+        // and non-empty: an unknown answer must not pretend to be "no
+        // arguments", and an empty one is covered by the note below (or,
+        // for Auto, by the scheduler's own defaults being the point).
+        // The surrounding paragraph wraps, so long flag lists fold instead
+        // of clipping.
+        if let Some(args) = app.selected_mode_args().filter(|args| !args.is_empty()) {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format_args(args), Style::default().fg(Color::Gray)),
+            ]));
+        }
         if !app.selected_mode_configured() {
             lines.push(Line::from(Span::styled(
                 "  no configured arguments for this mode — scheduler defaults will be used",
@@ -351,4 +364,29 @@ fn strip_prefix(sched: &str) -> &str {
 
 fn mode_name(mode: scx_loader::SchedMode) -> &'static str {
     <&str>::from(mode)
+}
+
+/// Formats an argument vector exactly like scxctl renders scheduler
+/// arguments: `shell_words::join`, so token boundaries survive spaces,
+/// quotes and commas, and the rendered line parses back into the same
+/// vector via `shell_words::split`.
+fn format_args(args: &[String]) -> String {
+    shell_words::join(args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Same guarantee scxctl pins for `format_scheduler_args`, repeated
+    /// here for the panel renderer: what the preview shows must parse
+    /// back into the identical argument vector.
+    #[test]
+    fn preview_format_round_trips() {
+        let args = ["--name", "foo bar", "", "a'b", "foo,bar"]
+            .map(str::to_string)
+            .to_vec();
+
+        assert_eq!(shell_words::split(&format_args(&args)), Ok(args));
+    }
 }

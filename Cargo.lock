@@ -1764,6 +1764,7 @@ dependencies = [
  "ratatui",
  "scx_loader",
  "serde_json",
+ "shell-words",
  "zbus",
 ]
 

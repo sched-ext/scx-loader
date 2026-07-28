@@ -190,6 +190,19 @@ impl App {
         MODES[self.mode_idx]
     }
 
+    /// Resolved arguments for the selected scheduler and mode, when
+    /// known. `None` covers "not fetched / query failed" as well as a mode
+    /// the daemon did not report; the preview only renders a known,
+    /// non-empty list, so both collapse into "nothing to show".
+    pub fn selected_mode_args(&self) -> Option<&[String]> {
+        let modes = self.mode_args.get(self.selected_scheduler()?)?;
+        let mode = self.selected_mode();
+        modes
+            .iter()
+            .find(|(m, _)| *m == mode)
+            .map(|(_, args)| args.as_slice())
+    }
+
     /// Whether the selected mode has configured arguments for the selected
     /// scheduler. Mirrors scxctl's client-side warning: `Auto` always
     /// counts, and an unknown answer (never fetched, or the query failed —
@@ -912,6 +925,30 @@ mod tests {
         let mut app = app_with_backend(StubBackend::new());
         select_mode(&mut app, SchedMode::Server);
         assert!(app.selected_mode_configured());
+    }
+
+    #[test]
+    fn selected_mode_args_follows_the_selection() {
+        let mut backend = StubBackend::new();
+        backend.modes.insert("scx_bpfland".into(), bpfland_modes());
+        let mut app = app_with_backend(backend);
+        app.refresh_modes();
+
+        select_mode(&mut app, SchedMode::Gaming);
+        let expected = ["-k", "-s", "5000"].map(str::to_string);
+        assert_eq!(app.selected_mode_args(), Some(&expected[..]));
+
+        select_mode(&mut app, SchedMode::Server);
+        assert_eq!(
+            app.selected_mode_args(),
+            None,
+            "a mode absent from the answer has nothing to preview"
+        );
+
+        // scx_lavd has no cache entry at all: same outcome, for the
+        // "unknown" reason.
+        app.selected = 1;
+        assert_eq!(app.selected_mode_args(), None);
     }
 
     #[test]
