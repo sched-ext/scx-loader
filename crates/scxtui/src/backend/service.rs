@@ -21,7 +21,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use scx_loader::SchedMode;
 
-use super::{Capabilities, SchedulerBackend, Status};
+use super::{Capabilities, ModeArgs, SchedulerBackend, Status};
 
 const UNIT: &str = "scx.service";
 /// Debian/Arch convention first, Fedora/openSUSE second.
@@ -253,7 +253,8 @@ impl SchedulerBackend for ServiceBackend {
         Ok(scheds)
     }
 
-    fn configured_modes(&self, _sched: &str) -> Result<Vec<SchedMode>> {
+    fn mode_args(&self, _sched: &str) -> Result<ModeArgs> {
+        // Unreachable in practice: `modes: false` keeps the UI from asking.
         Ok(Vec::new())
     }
 

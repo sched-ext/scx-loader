@@ -16,13 +16,17 @@ pub mod service;
 use anyhow::Result;
 use scx_loader::SchedMode;
 
+/// Resolved arguments for every mode of one scheduler, in the daemon's
+/// stable order. Modes with no configured arguments carry an empty `Vec`.
+pub type ModeArgs = Vec<(SchedMode, Vec<String>)>;
+
 /// What a given backend can actually do. The UI greys out or hides
 /// anything the active backend does not support.
 #[derive(Debug, Clone, Copy)]
 pub struct Capabilities {
     /// Can switch schedulers at runtime without a service restart.
     pub live_switch: bool,
-    /// Exposes per-scheduler mode configuration (`SchedulerModes`).
+    /// Exposes per-scheduler mode configuration (`SchedulerModeArgs`).
     pub modes: bool,
     /// Supports restoring a configured default scheduler.
     pub restore_default: bool,
@@ -60,9 +64,14 @@ pub trait SchedulerBackend {
 
     fn supported_schedulers(&self) -> Result<Vec<String>>;
 
-    /// Modes that resolve to a non-empty argument list for `sched`.
-    /// `Auto` is always considered configured.
-    fn configured_modes(&self, sched: &str) -> Result<Vec<SchedMode>>;
+    /// Resolved arguments for every mode of `sched` (see [`ModeArgs`]).
+    /// This is a superset of the old "which modes are configured" query:
+    /// a mode counts as configured exactly when it is `Auto` or its
+    /// argument list here is non-empty — the same rule the daemon applies
+    /// in `SchedulerModes` — so callers derive that locally instead of
+    /// holding a second source of truth that could drift from the
+    /// arguments they display.
+    fn mode_args(&self, sched: &str) -> Result<ModeArgs>;
 
     fn start(&self, sched: &str, mode: SchedMode) -> Result<()>;
 

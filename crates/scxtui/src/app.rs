@@ -13,7 +13,7 @@ use scx_loader::SchedMode;
 
 use crate::backend::loader::LoaderBackend;
 use crate::backend::service::ServiceBackend;
-use crate::backend::{Capabilities, SchedulerBackend, Status};
+use crate::backend::{Capabilities, ModeArgs, SchedulerBackend, Status};
 use crate::kernel::{self, KernelState};
 use crate::logs::{self, LogLine};
 use crate::ui;
@@ -30,6 +30,17 @@ pub const MODES: [SchedMode; 5] = [
 /// Lower-case mode name, matching the status panel and scxctl's CLI.
 fn mode_label(mode: SchedMode) -> &'static str {
     <&str>::from(mode)
+}
+
+/// Filters a [`ModeArgs`] answer down to the modes that count as
+/// configured: `Auto` always, anything else when its resolved argument
+/// list is non-empty.
+fn derive_configured(modes: ModeArgs) -> Vec<SchedMode> {
+    modes
+        .into_iter()
+        .filter(|(mode, args)| *mode == SchedMode::Auto || !args.is_empty())
+        .map(|(mode, _)| mode)
+        .collect()
 }
 
 /// How often the input poll wakes up to redraw / refresh.
@@ -665,12 +676,22 @@ or your distro's scx tools package)",
         }
     }
 
+    /// Configured modes are derived from the full per-mode argument query
+    /// (`SchedulerModeArgs`): `Auto` always counts, any other mode counts
+    /// when its resolved argument list is non-empty — the same rule the
+    /// daemon applies in `SchedulerModes`. Deriving locally lets a single
+    /// query serve both this indicator and an argument preview without a
+    /// second source of truth.
     fn refresh_modes(&mut self) {
         self.configured_modes = match self.selected_scheduler() {
             Some(sched) if self.backend.capabilities().modes => {
-                // Fail open: an empty list means "unknown" to
+                // Fail open: a successful answer always contains at least
+                // `Auto`, so an empty list still means "unknown" to
                 // `selected_mode_configured`, not "nothing configured".
-                self.backend.configured_modes(sched).unwrap_or_default()
+                self.backend
+                    .mode_args(sched)
+                    .map(derive_configured)
+                    .unwrap_or_default()
             }
             _ => Vec::new(),
         };
@@ -720,7 +741,7 @@ mod tests {
         fn supported_schedulers(&self) -> Result<Vec<String>> {
             Ok(self.schedulers.clone())
         }
-        fn configured_modes(&self, _sched: &str) -> Result<Vec<SchedMode>> {
+        fn mode_args(&self, _sched: &str) -> Result<ModeArgs> {
             Ok(Vec::new())
         }
         fn start(&self, _sched: &str, _mode: SchedMode) -> Result<()> {

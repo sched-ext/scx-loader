@@ -30,7 +30,7 @@ use zbus::names::{BusName, InterfaceName};
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedValue;
 
-use super::{Capabilities, SchedulerBackend, Status};
+use super::{Capabilities, ModeArgs, SchedulerBackend, Status};
 
 /// Sentinel used by `scx_loader` for "nothing running / not configured".
 const UNKNOWN: &str = "unknown";
@@ -57,7 +57,7 @@ trait Loader {
 
     fn restore_default(&self) -> zbus::Result<()>;
 
-    fn scheduler_modes(&self, scx_name: &str) -> zbus::Result<Vec<SchedMode>>;
+    fn scheduler_mode_args(&self, scx_name: &str) -> zbus::Result<ModeArgs>;
 
     #[zbus(property)]
     fn current_scheduler(&self) -> zbus::Result<String>;
@@ -227,8 +227,8 @@ impl SchedulerBackend for LoaderBackend {
         Ok(self.proxy.supported_schedulers()?)
     }
 
-    fn configured_modes(&self, sched: &str) -> Result<Vec<SchedMode>> {
-        Ok(self.proxy.scheduler_modes(sched)?)
+    fn mode_args(&self, sched: &str) -> Result<ModeArgs> {
+        Ok(self.proxy.scheduler_mode_args(sched)?)
     }
 
     fn start(&self, sched: &str, mode: SchedMode) -> Result<()> {
