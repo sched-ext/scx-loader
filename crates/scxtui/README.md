@@ -2,7 +2,7 @@
   <img
     src="assets/scxtui-logo.png"
     alt="scxtui logo"
-    width="420"
+    width="320"
   >
 </p>
 
