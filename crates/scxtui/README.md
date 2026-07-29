@@ -1,6 +1,6 @@
 <p align="center">
   <img
-    src="assets/scxtui-logo.png"
+    src="https://raw.githubusercontent.com/sched-ext/scx-loader/main/crates/scxtui/assets/scxtui-logo.png"
     alt="scxtui logo"
     width="320"
   >
@@ -11,10 +11,8 @@
 **A terminal user interface for managing Linux [`sched_ext`](https://github.com/sched-ext/scx) schedulers through [`scx_loader`](https://github.com/sched-ext/scx-loader) or `scx.service`.**
 
 [![Crates.io](https://img.shields.io/crates/v/scxtui.svg)](https://crates.io/crates/scxtui)
-[![License](https://img.shields.io/crates/l/scxtui.svg)](../../LICENSE)
+[![License](https://img.shields.io/crates/l/scxtui.svg)](https://github.com/sched-ext/scx-loader/blob/main/LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux-blue.svg)](#requirements)
-
-</div>
 
 `scxtui` provides an interactive view of the available `sched_ext` schedulers.
 It can start and switch schedulers, select operating modes, inspect the
