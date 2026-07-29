@@ -45,6 +45,10 @@ const REFRESH_EVERY: Duration = Duration::from_secs(5);
 /// deliver key autorepeat as plain `Press` events (no kitty protocol), so
 /// without this, holding `r` would fire one restart per repeat.
 const ACTION_DEBOUNCE: Duration = Duration::from_millis(500);
+/// How long informational messages stay in the message bar. Without a
+/// TTL, a stale "refreshed" from minutes ago reads as fresh feedback.
+/// Errors are exempt: they are actionable and stay until replaced.
+const MESSAGE_TTL: Duration = Duration::from_secs(8);
 
 /// Which scheduler-management backend drives the app.
 #[derive(Clone, Copy, PartialEq)]
@@ -95,6 +99,8 @@ pub enum View {
 pub struct Message {
     pub text: String,
     pub is_error: bool,
+    /// When the message was posted; drives [`MESSAGE_TTL`] expiry.
+    shown_at: Instant,
 }
 
 pub struct App {
@@ -133,7 +139,7 @@ pub struct App {
 impl App {
     pub fn new(kind: BackendKind, backend: Box<dyn SchedulerBackend>) -> Result<Self> {
         let schedulers = backend.supported_schedulers()?;
-        let mut app = Self {
+        let app = Self {
             backend,
             backend_kind: kind,
             schedulers,
@@ -153,8 +159,9 @@ impl App {
             pending_action: None,
             should_quit: false,
         };
-        app.refresh_status();
-        app.refresh_modes();
+        // No initial status/modes fetch here: `run` draws the first frame
+        // with the scheduler list alone and fetches right after, so the UI
+        // appears immediately instead of waiting on D-Bus round-trips.
         Ok(app)
     }
 
@@ -187,8 +194,34 @@ impl App {
 
     pub fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
         let mut last_refresh = Instant::now();
+        let mut primed = false;
         while !self.should_quit {
             terminal.draw(|frame| ui::draw(frame, self))?;
+
+            // First frame is a skeleton: scheduler list only, status panel
+            // in its "unknown" placeholder. The initial fetch happens right
+            // after it is on screen and the immediate redraw fills it in —
+            // on a healthy system that is a single-digit-ms flicker, and on
+            // a slow daemon the user at least sees a live UI instead of a
+            // blank terminal.
+            if !primed {
+                primed = true;
+                self.refresh_status();
+                self.sync_selection_to_running();
+                self.refresh_modes();
+                last_refresh = Instant::now();
+                continue;
+            }
+
+            // Informational messages expire so stale feedback never reads
+            // as fresh; errors stay until replaced (see MESSAGE_TTL).
+            if self
+                .message
+                .as_ref()
+                .is_some_and(|m| !m.is_error && m.shown_at.elapsed() >= MESSAGE_TTL)
+            {
+                self.message = None;
+            }
 
             // Execute a queued action only after the frame announcing it
             // ("working…") has been drawn, then redraw immediately so the
@@ -315,9 +348,14 @@ or your distro's scx tools package)",
                 }
             }
             KeyCode::Char('R') => {
+                // The success notice must not clobber a list-refresh error,
+                // same rule as refresh_status not touching the message bar.
+                let list_ok = self.refresh_schedulers();
                 self.refresh_status();
                 self.refresh_modes();
-                self.info("refreshed");
+                if list_ok {
+                    self.info("refreshed");
+                }
             }
             _ => {}
         }
@@ -365,6 +403,7 @@ or your distro's scx tools package)",
                 self.selected = 0;
                 self.mode_idx = 0;
                 self.refresh_status();
+                self.sync_selection_to_running();
                 self.refresh_modes();
                 self.info(&format!("switched to {} backend", self.backend.label()));
             }
@@ -390,13 +429,18 @@ or your distro's scx tools package)",
     fn reload_logs(&mut self) {
         let unit = logs::UNITS[self.log_unit];
         match logs::fetch(unit, self.log_previous_boot) {
-            Ok(lines) => {
+            Ok(fetch) => {
                 let boot = if self.log_previous_boot { "-1" } else { "0" };
+                let tail_note = if fetch.truncated {
+                    " — older entries omitted, see journalctl for the full log"
+                } else {
+                    ""
+                };
                 self.info(&format!(
-                    "loaded {} lines from {unit} (boot {boot})",
-                    lines.len()
+                    "loaded {} lines from {unit} (boot {boot}){tail_note}",
+                    fetch.lines.len()
                 ));
-                self.log_lines = lines;
+                self.log_lines = fetch.lines;
                 self.log_scroll = 0;
             }
             Err(err) => {
@@ -437,6 +481,35 @@ or your distro's scx tools package)",
         } else {
             (self.mode_idx + len - 1) % len
         };
+    }
+
+    /// Aligns the scheduler selection and the mode selector with what is
+    /// actually running, so the first `Enter`/`r` after startup acts on
+    /// what the user sees instead of on `schedulers[0]` + `Auto`. Only
+    /// called on startup and after a backend switch — never on the
+    /// periodic refresh, which must not fight the user's own selection.
+    ///
+    /// All-or-nothing: a running scheduler outside the advertised list
+    /// (hand-launched next to the loader) leaves *both* selectors alone —
+    /// syncing only the mode would pair the foreign scheduler's mode with
+    /// an unrelated selection. The mode half is additionally skipped for
+    /// custom args, since no selector position represents that state.
+    fn sync_selection_to_running(&mut self) {
+        let Some(status) = &self.status else {
+            return;
+        };
+        let Some(current) = &status.current else {
+            return;
+        };
+        let Some(idx) = self.schedulers.iter().position(|s| s == current) else {
+            return;
+        };
+        self.selected = idx;
+        if status.args.is_empty() {
+            if let Some(idx) = MODES.iter().position(|m| *m == status.mode) {
+                self.mode_idx = idx;
+            }
+        }
     }
 
     /// Debounce gate for scheduler-affecting actions (Enter/s/r/d/B).
@@ -570,6 +643,28 @@ or your distro's scx tools package)",
         self.kernel = kernel::read();
     }
 
+    /// Re-enumerates the scheduler list. The list is otherwise fetched
+    /// once at startup, so without this a daemon restarted with a changed
+    /// configuration would keep serving a stale list until scxtui itself
+    /// restarts. The selection survives by name where possible; on a
+    /// failed query the old list stays — a stale list beats an empty one.
+    fn refresh_schedulers(&mut self) -> bool {
+        match self.backend.supported_schedulers() {
+            Ok(schedulers) => {
+                let previous = self.selected_scheduler().map(str::to_owned);
+                self.selected = previous
+                    .and_then(|name| schedulers.iter().position(|s| *s == name))
+                    .unwrap_or(0);
+                self.schedulers = schedulers;
+                true
+            }
+            Err(err) => {
+                self.error(&format!("scheduler list refresh failed: {err:#}"));
+                false
+            }
+        }
+    }
+
     fn refresh_modes(&mut self) {
         self.configured_modes = match self.selected_scheduler() {
             Some(sched) if self.backend.capabilities().modes => {
@@ -585,6 +680,7 @@ or your distro's scx tools package)",
         self.message = Some(Message {
             text: text.to_owned(),
             is_error: false,
+            shown_at: Instant::now(),
         });
     }
 
@@ -592,6 +688,124 @@ or your distro's scx tools package)",
         self.message = Some(Message {
             text: text.to_owned(),
             is_error: true,
+            shown_at: Instant::now(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal in-memory backend: enough for exercising selection logic
+    /// without a D-Bus connection.
+    struct StubBackend {
+        schedulers: Vec<String>,
+    }
+
+    impl SchedulerBackend for StubBackend {
+        fn label(&self) -> &'static str {
+            "stub"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                live_switch: true,
+                modes: true,
+                restore_default: true,
+            }
+        }
+        fn status(&self) -> Result<Status> {
+            unreachable!("tests set App::status directly")
+        }
+        fn supported_schedulers(&self) -> Result<Vec<String>> {
+            Ok(self.schedulers.clone())
+        }
+        fn configured_modes(&self, _sched: &str) -> Result<Vec<SchedMode>> {
+            Ok(Vec::new())
+        }
+        fn start(&self, _sched: &str, _mode: SchedMode) -> Result<()> {
+            Ok(())
+        }
+        fn switch(&self, _sched: &str, _mode: SchedMode) -> Result<()> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<()> {
+            Ok(())
+        }
+        fn restart(&self) -> Result<()> {
+            Ok(())
+        }
+        fn restore_default(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn app_with_status(status: Status) -> App {
+        let backend = StubBackend {
+            schedulers: vec!["scx_bpfland".into(), "scx_lavd".into(), "scx_cake".into()],
+        };
+        let mut app = App::new(BackendKind::Loader, Box::new(backend)).unwrap();
+        app.status = Some(status);
+        app
+    }
+
+    fn running(current: &str, mode: SchedMode, args: &[&str]) -> Status {
+        Status {
+            current: Some(current.to_owned()),
+            mode,
+            args: args.iter().map(|a| (*a).to_owned()).collect(),
+            default_sched: None,
+            default_mode: SchedMode::Auto,
+        }
+    }
+
+    #[test]
+    fn sync_aligns_selection_and_mode_with_running_scheduler() {
+        let mut app = app_with_status(running("scx_lavd", SchedMode::Gaming, &[]));
+        app.sync_selection_to_running();
+        assert_eq!(app.selected_scheduler(), Some("scx_lavd"));
+        assert_eq!(app.selected_mode(), SchedMode::Gaming);
+    }
+
+    #[test]
+    fn sync_with_custom_args_keeps_mode_selector_untouched() {
+        let mut app = app_with_status(running(
+            "scx_cake",
+            SchedMode::Gaming,
+            &["--slice-us", "500"],
+        ));
+        app.sync_selection_to_running();
+        // Selection follows the running scheduler, but no selector position
+        // represents "custom args", so the mode stays where it was.
+        assert_eq!(app.selected_scheduler(), Some("scx_cake"));
+        assert_eq!(app.selected_mode(), SchedMode::Auto);
+    }
+
+    #[test]
+    fn sync_with_unknown_scheduler_is_a_full_no_op() {
+        // A hand-launched scheduler outside the advertised list must not
+        // touch either selector: syncing only the mode would pair the
+        // foreign scheduler's mode with an unrelated selection.
+        let mut app = app_with_status(running("scx_homebrew", SchedMode::Server, &[]));
+        app.selected = 1;
+        app.mode_idx = 1;
+        app.sync_selection_to_running();
+        assert_eq!(app.selected_scheduler(), Some("scx_lavd"));
+        assert_eq!(app.selected_mode(), SchedMode::Gaming);
+    }
+
+    #[test]
+    fn sync_with_nothing_running_is_a_no_op() {
+        let mut app = app_with_status(Status {
+            current: None,
+            mode: SchedMode::Auto,
+            args: Vec::new(),
+            default_sched: None,
+            default_mode: SchedMode::Auto,
+        });
+        app.mode_idx = 2;
+        app.sync_selection_to_running();
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.mode_idx, 2);
     }
 }

@@ -32,16 +32,33 @@ pub struct LogLine {
     pub continuation: bool,
 }
 
-/// Fetches the journal for `unit`, current boot or the previous one, and
-/// flattens it into display lines (oldest first).
-pub fn fetch(unit: &str, previous_boot: bool) -> Result<Vec<LogLine>> {
+/// Tail limit for a single journal fetch. Without it, a chatty scheduler
+/// on a long-running boot can hand back tens of megabytes of JSON, all
+/// parsed synchronously while the UI is frozen. The newest entries are
+/// what the view opens on anyway; anything older is `journalctl`'s job.
+const MAX_ENTRIES: usize = 5000;
+
+/// Result of one journal fetch: flattened display lines plus whether the
+/// tail limit cut the beginning off, so the UI can say so.
+pub struct LogFetch {
+    pub lines: Vec<LogLine>,
+    pub truncated: bool,
+}
+
+/// Fetches the journal tail for `unit` (up to [`MAX_ENTRIES`] entries),
+/// current boot or the previous one, and flattens it into display lines
+/// (oldest first).
+pub fn fetch(unit: &str, previous_boot: bool) -> Result<LogFetch> {
     let boot = if previous_boot { "-1" } else { "0" };
+    let limit = MAX_ENTRIES.to_string();
     let output = Command::new("journalctl")
         .args([
             "--unit",
             unit,
             "--boot",
             boot,
+            "--lines",
+            &limit,
             "--output=json",
             "--no-pager",
             "--quiet",
@@ -62,7 +79,14 @@ pub fn fetch(unit: &str, previous_boot: bool) -> Result<Vec<LogLine>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(parse_entries(&stdout))
+    // `--lines` limits journal *entries*; display lines can be more after
+    // multi-line flattening. Hitting the entry count exactly means the
+    // tail almost certainly cut something off.
+    let entries = stdout.lines().filter(|line| !line.is_empty()).count();
+    Ok(LogFetch {
+        lines: parse_entries(&stdout),
+        truncated: entries >= MAX_ENTRIES,
+    })
 }
 
 /// Pure parsing core: one `journalctl --output=json` line per entry in,
