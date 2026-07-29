@@ -22,12 +22,18 @@ pub type ModeArgs = Vec<(SchedMode, Vec<String>)>;
 
 /// What a given backend can actually do. The UI greys out or hides
 /// anything the active backend does not support.
+// Independent yes/no capability flags are the point of this struct;
+// `struct_excessive_bools` suggests a state machine, which this is not.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy)]
 pub struct Capabilities {
     /// Can switch schedulers at runtime without a service restart.
     pub live_switch: bool,
     /// Exposes per-scheduler mode configuration (`SchedulerModeArgs`).
     pub modes: bool,
+    /// Can start or switch a scheduler with free-form arguments instead
+    /// of a mode (`StartSchedulerWithArgs` / `SwitchSchedulerWithArgs`).
+    pub custom_args: bool,
     /// Supports restoring a configured default scheduler.
     pub restore_default: bool,
 }
@@ -88,6 +94,15 @@ pub trait SchedulerBackend {
     fn start(&self, sched: &str, mode: SchedMode) -> Result<()>;
 
     fn switch(&self, sched: &str, mode: SchedMode) -> Result<()>;
+
+    /// Starts `sched` with free-form arguments instead of a mode. The
+    /// arguments live only in the daemon's memory for this run — nothing
+    /// is written to the loader config, hence "session-only" in the UI.
+    fn start_with_args(&self, sched: &str, args: &[String]) -> Result<()>;
+
+    /// Same as [`Self::start_with_args`], but stops a running scheduler
+    /// first, like [`Self::switch`].
+    fn switch_with_args(&self, sched: &str, args: &[String]) -> Result<()>;
 
     fn stop(&self) -> Result<()>;
 

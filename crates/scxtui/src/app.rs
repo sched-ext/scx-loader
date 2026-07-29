@@ -8,10 +8,11 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
 use scx_loader::SchedMode;
 
+use crate::args::{expand_input, ArgsExpandError};
 use crate::backend::loader::LoaderBackend;
 use crate::backend::service::ServiceBackend;
 use crate::backend::{Capabilities, ModeArgs, SchedulerBackend, Status};
@@ -80,14 +81,60 @@ pub fn make_backend(kind: BackendKind) -> Result<Box<dyn SchedulerBackend>> {
 /// loop right after the frame announcing them has been drawn. Backend
 /// calls block (a hung daemon holds the D-Bus timeout, ~25 s), so the UI
 /// must show feedback *before* making them.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum PendingAction {
     StartOrSwitch,
+    /// Expanded field content; see [`App::submit_args`].
+    StartOrSwitchWithArgs(Vec<String>),
     Stop,
     Restart,
     RestoreDefault,
     ToggleBackend,
     Monitor,
+}
+
+/// State of the session-only custom-arguments field. The cursor is
+/// counted in characters, not bytes, so editing multi-byte input stays
+/// sound; the UI derives its cursor block from the same count.
+#[derive(Default)]
+pub struct ArgsInput {
+    pub buffer: String,
+    pub cursor: usize,
+}
+
+impl ArgsInput {
+    /// Byte offset of the character cursor, for `String` edits.
+    fn byte_cursor(&self) -> usize {
+        self.buffer
+            .char_indices()
+            .nth(self.cursor)
+            .map_or(self.buffer.len(), |(idx, _)| idx)
+    }
+
+    fn len_chars(&self) -> usize {
+        self.buffer.chars().count()
+    }
+
+    fn insert(&mut self, c: char) {
+        let at = self.byte_cursor();
+        self.buffer.insert(at, c);
+        self.cursor += 1;
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            let at = self.byte_cursor();
+            self.buffer.remove(at);
+        }
+    }
+
+    fn delete(&mut self) {
+        let at = self.byte_cursor();
+        if at < self.buffer.len() {
+            self.buffer.remove(at);
+        }
+    }
 }
 
 /// Which screen is currently shown.
@@ -123,6 +170,9 @@ pub struct App {
     /// Last observed backend instance token; a change invalidates
     /// `mode_args`.
     daemon_instance: Option<String>,
+    /// Custom-arguments field; `Some` while the user is typing. While
+    /// open it owns every key press.
+    pub args_input: Option<ArgsInput>,
     pub message: Option<Message>,
     /// Timestamp of the last scheduler-affecting action, for debouncing.
     last_action: Option<Instant>,
@@ -157,6 +207,7 @@ impl App {
             kernel: None,
             mode_args: HashMap::new(),
             daemon_instance: None,
+            args_input: None,
             message: None,
             last_action: None,
             view: View::Schedulers,
@@ -319,6 +370,7 @@ or your distro's scx tools package)",
     fn run_action(&mut self, action: PendingAction, terminal: &mut DefaultTerminal) -> Result<()> {
         match action {
             PendingAction::StartOrSwitch => self.start_or_switch(),
+            PendingAction::StartOrSwitchWithArgs(args) => self.start_or_switch_with_args(&args),
             PendingAction::Stop => self.act("stopped", |b| b.stop()),
             PendingAction::Restart => self.restart_scheduler(),
             PendingAction::RestoreDefault => {
@@ -331,9 +383,70 @@ or your distro's scx tools package)",
     }
 
     fn on_key(&mut self, key: KeyEvent) {
+        if self.view == View::Schedulers && self.args_input.is_some() {
+            self.on_key_args(key);
+            return;
+        }
         match self.view {
             View::Schedulers => self.on_key_schedulers(key),
             View::Logs => self.on_key_logs(key),
+        }
+    }
+
+    /// Key handling while the custom-arguments field is open. The field
+    /// owns every key press: global shortcuts must not fire while the
+    /// user is typing text that may well contain their letters — which
+    /// also means `Esc` closes the field here instead of quitting.
+    fn on_key_args(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.args_input = None,
+            KeyCode::Enter => self.submit_args(),
+            code => {
+                let Some(input) = self.args_input.as_mut() else {
+                    return;
+                };
+                match code {
+                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        input.insert(c);
+                    }
+                    KeyCode::Backspace => input.backspace(),
+                    KeyCode::Delete => input.delete(),
+                    KeyCode::Left => input.cursor = input.cursor.saturating_sub(1),
+                    KeyCode::Right => input.cursor = (input.cursor + 1).min(input.len_chars()),
+                    KeyCode::Home => input.cursor = 0,
+                    KeyCode::End => input.cursor = input.len_chars(),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// `Enter` in the field: expand exactly like scxctl's `--args`, then
+    /// queue the start/switch. Expansion errors keep the field open with
+    /// the message bar explaining what to fix; only a successfully queued
+    /// action closes it.
+    fn submit_args(&mut self) {
+        let Some(buffer) = self.args_input.as_ref().map(|input| input.buffer.clone()) else {
+            return;
+        };
+        match expand_input(&buffer) {
+            Ok(args) => {
+                if self.action_allowed() {
+                    self.args_input = None;
+                    self.queue(PendingAction::StartOrSwitchWithArgs(args));
+                }
+            }
+            Err(ArgsExpandError::Parse(msg)) => {
+                self.error(&format!(
+                    "invalid arguments: {msg} — quotes must be balanced and cannot span a comma"
+                ));
+            }
+            Err(ArgsExpandError::Empty) => {
+                self.error(
+                    "arguments expanded to nothing — to run with scheduler defaults, \
+press Esc and use Enter instead",
+                );
+            }
         }
     }
 
@@ -353,6 +466,11 @@ or your distro's scx tools package)",
             }
             KeyCode::Down | KeyCode::Char('j') => self.select_next(),
             KeyCode::Up | KeyCode::Char('k') => self.select_prev(),
+            KeyCode::Char('a') if self.backend.capabilities().custom_args => {
+                if self.selected_scheduler().is_some() {
+                    self.args_input = Some(ArgsInput::default());
+                }
+            }
             KeyCode::Tab | KeyCode::Char('m') if self.backend.capabilities().modes => {
                 self.cycle_mode(true);
             }
@@ -622,6 +740,58 @@ or your distro's scx tools package)",
         self.refresh_status();
     }
 
+    /// The with-args sibling of [`Self::start_or_switch`]: the same
+    /// start-vs-switch decision against a re-read daemon state, but the
+    /// scheduler receives the expanded field content instead of a mode.
+    /// The arguments are session-only — the loader keeps them for this
+    /// run and nothing is written to its config — and both the success
+    /// notice and a failure render them in the same shell-words form the
+    /// status panel and scxctl use.
+    fn start_or_switch_with_args(&mut self, args: &[String]) {
+        let Some(sched) = self.selected_scheduler().map(str::to_owned) else {
+            return;
+        };
+        // Same staleness concern as in `start_or_switch`.
+        self.refresh_status();
+        let running = self
+            .status
+            .as_ref()
+            .and_then(|status| status.current.clone());
+
+        let result = if running.is_some() {
+            self.backend.switch_with_args(&sched, args)
+        } else {
+            self.backend.start_with_args(&sched, args)
+        };
+
+        let rendered = shell_words::join(args);
+        match result {
+            Ok(()) => {
+                let verb = if running.is_none() {
+                    "started"
+                } else if running.as_deref() == Some(sched.as_str()) {
+                    "restarted"
+                } else {
+                    "switched to"
+                };
+                self.info(&format!(
+                    "{verb} {sched} with args: {rendered} (session-only)"
+                ));
+            }
+            Err(err) => {
+                let verb = if running.is_some() {
+                    "switch to"
+                } else {
+                    "start"
+                };
+                self.error(&format!(
+                    "{verb} {sched} with args '{rendered}' failed: {err:#}"
+                ));
+            }
+        }
+        self.refresh_status();
+    }
+
     /// `r`: restart. Plain `RestartScheduler` deliberately reuses the
     /// original configuration, so by itself it can never apply a mode
     /// change — and the very first piece of community feedback was someone
@@ -815,6 +985,7 @@ mod tests {
             Capabilities {
                 live_switch: true,
                 modes: true,
+                custom_args: true,
                 restore_default: true,
             }
         }
@@ -844,6 +1015,12 @@ mod tests {
             Ok(())
         }
         fn switch(&self, _sched: &str, _mode: SchedMode) -> Result<()> {
+            Ok(())
+        }
+        fn start_with_args(&self, _sched: &str, _args: &[String]) -> Result<()> {
+            Ok(())
+        }
+        fn switch_with_args(&self, _sched: &str, _args: &[String]) -> Result<()> {
             Ok(())
         }
         fn stop(&self) -> Result<()> {
@@ -1018,6 +1195,95 @@ mod tests {
             *queries.borrow(),
             2,
             "R must refetch instead of serving the cache"
+        );
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::from(code)
+    }
+
+    fn type_str(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn args_field_opens_on_a_and_owns_global_keys() {
+        let mut app = app_with_backend(StubBackend::new());
+        app.on_key(key(KeyCode::Char('a')));
+        assert!(app.args_input.is_some());
+
+        // 'q' quits globally, but inside the field it is just a letter.
+        app.on_key(key(KeyCode::Char('q')));
+        assert!(!app.should_quit);
+        assert_eq!(app.args_input.as_ref().unwrap().buffer, "q");
+
+        // Esc closes the field instead of quitting the app.
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.args_input.is_none());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn args_field_edits_at_the_character_cursor() {
+        let mut app = app_with_backend(StubBackend::new());
+        app.on_key(key(KeyCode::Char('a')));
+        type_str(&mut app, "ad");
+        app.on_key(key(KeyCode::Left));
+        type_str(&mut app, "bc");
+        app.on_key(key(KeyCode::End));
+        app.on_key(key(KeyCode::Backspace));
+        assert_eq!(app.args_input.as_ref().unwrap().buffer, "abc");
+
+        // Multi-byte characters: the cursor counts characters, not bytes.
+        app.on_key(key(KeyCode::Home));
+        type_str(&mut app, "żó");
+        app.on_key(key(KeyCode::Home));
+        app.on_key(key(KeyCode::Delete));
+        assert_eq!(app.args_input.as_ref().unwrap().buffer, "óabc");
+    }
+
+    #[test]
+    fn args_parse_error_keeps_the_field_open() {
+        let mut app = app_with_backend(StubBackend::new());
+        app.on_key(key(KeyCode::Char('a')));
+        type_str(&mut app, "--name \"foo");
+        app.on_key(key(KeyCode::Enter));
+
+        assert!(app.args_input.is_some(), "the user must be able to fix it");
+        assert!(app.message.as_ref().unwrap().is_error);
+        assert!(app.pending_action.is_none());
+    }
+
+    #[test]
+    fn args_empty_input_is_rejected() {
+        let mut app = app_with_backend(StubBackend::new());
+        app.on_key(key(KeyCode::Char('a')));
+        type_str(&mut app, "   ");
+        app.on_key(key(KeyCode::Enter));
+
+        assert!(app.args_input.is_some());
+        assert!(app.message.as_ref().unwrap().is_error);
+        assert!(app.pending_action.is_none());
+    }
+
+    #[test]
+    fn args_valid_input_queues_the_expanded_action() {
+        let mut app = app_with_backend(StubBackend::new());
+        app.on_key(key(KeyCode::Char('a')));
+        type_str(&mut app, "-s 20000,-m powersave");
+        app.on_key(key(KeyCode::Enter));
+
+        assert!(app.args_input.is_none(), "a queued action closes the field");
+        let Some(PendingAction::StartOrSwitchWithArgs(args)) = &app.pending_action else {
+            panic!("expected a queued with-args action");
+        };
+        assert_eq!(
+            args,
+            &["-s", "20000", "-m", "powersave"]
+                .map(str::to_string)
+                .to_vec()
         );
     }
 

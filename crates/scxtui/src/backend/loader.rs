@@ -51,6 +51,10 @@ trait Loader {
 
     fn switch_scheduler(&self, scx_name: &str, sched_mode: SchedMode) -> zbus::Result<()>;
 
+    fn start_scheduler_with_args(&self, scx_name: &str, scx_args: &[String]) -> zbus::Result<()>;
+
+    fn switch_scheduler_with_args(&self, scx_name: &str, scx_args: &[String]) -> zbus::Result<()>;
+
     fn stop_scheduler(&self) -> zbus::Result<()>;
 
     fn restart_scheduler(&self) -> zbus::Result<()>;
@@ -199,6 +203,7 @@ impl SchedulerBackend for LoaderBackend {
         Capabilities {
             live_switch: true,
             modes: true,
+            custom_args: true,
             restore_default: true,
         }
     }
@@ -254,6 +259,14 @@ impl SchedulerBackend for LoaderBackend {
 
     fn switch(&self, sched: &str, mode: SchedMode) -> Result<()> {
         Ok(self.proxy.switch_scheduler(sched, mode)?)
+    }
+
+    fn start_with_args(&self, sched: &str, args: &[String]) -> Result<()> {
+        Ok(self.proxy.start_scheduler_with_args(sched, args)?)
+    }
+
+    fn switch_with_args(&self, sched: &str, args: &[String]) -> Result<()> {
+        Ok(self.proxy.switch_scheduler_with_args(sched, args)?)
     }
 
     fn stop(&self) -> Result<()> {

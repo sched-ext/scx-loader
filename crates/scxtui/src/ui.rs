@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, View};
+use crate::app::{App, ArgsInput, View};
 use crate::logs;
 
 const SCHED_PREFIX: &str = "scx_";
@@ -170,6 +170,21 @@ fn draw_status_panel(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
+    if let Some(input) = &app.args_input {
+        lines.push(Line::default());
+        let mut spans = vec![Span::styled(
+            "Args: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        )];
+        spans.extend(input_spans(input));
+        lines.push(Line::from(spans));
+        lines.push(Line::from(Span::styled(
+            "  session-only — not written to the loader config; \
+same syntax as scxctl --args",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
     let panel = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .block(Block::default().borders(Borders::ALL).title(" Status "));
@@ -310,11 +325,17 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     .areas(area);
 
     let key_help = match app.view {
+        View::Schedulers if app.args_input.is_some() => {
+            String::from(" type arguments · Enter start/switch · Esc cancel")
+        }
         View::Schedulers => {
             let caps = app.capabilities();
             let mut help = String::from(" ↑/↓ select · Tab mode · Enter start");
             if caps.live_switch {
                 help.push_str("/switch");
+            }
+            if caps.custom_args {
+                help.push_str(" · a args");
             }
             help.push_str(" · s stop · r restart");
             if caps.restore_default {
@@ -364,6 +385,29 @@ fn strip_prefix(sched: &str) -> &str {
 
 fn mode_name(mode: scx_loader::SchedMode) -> &'static str {
     <&str>::from(mode)
+}
+
+/// Renders the field content with a reversed-video block as the cursor.
+/// A styled span instead of the real terminal cursor keeps the position
+/// correct under the paragraph's wrapping without any coordinate math;
+/// at the end of the buffer the block sits on a synthetic space.
+fn input_spans(input: &ArgsInput) -> Vec<Span<'static>> {
+    let mut before = String::new();
+    let mut at = None;
+    let mut after = String::new();
+    for (i, c) in input.buffer.chars().enumerate() {
+        match i.cmp(&input.cursor) {
+            std::cmp::Ordering::Less => before.push(c),
+            std::cmp::Ordering::Equal => at = Some(c),
+            std::cmp::Ordering::Greater => after.push(c),
+        }
+    }
+    let cursor = at.map_or_else(|| " ".to_owned(), |c| c.to_string());
+    vec![
+        Span::raw(before),
+        Span::styled(cursor, Style::default().add_modifier(Modifier::REVERSED)),
+        Span::raw(after),
+    ]
 }
 
 /// Formats an argument vector exactly like scxctl renders scheduler

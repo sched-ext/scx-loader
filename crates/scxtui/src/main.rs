@@ -3,6 +3,7 @@
 #![deny(unsafe_code)]
 
 mod app;
+mod args;
 mod backend;
 mod kernel;
 mod logs;

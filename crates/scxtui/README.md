@@ -48,6 +48,10 @@ unprivileged D-Bus client; scheduler lifecycle management remains in
   when the daemon restarts.
 - Warns when a selected mode has no configured arguments and scheduler
   defaults will be used.
+- Starts or switches a scheduler with free-form custom arguments, using the
+  exact `--args` syntax and semantics of `scxctl` (comma split, then
+  shell-style words). The arguments are session-only: nothing is written to
+  the loader configuration.
 - Stops, restarts, or restores the configured default scheduler. A restart
   with a different mode selected for the running scheduler applies that
   mode.
@@ -138,6 +142,7 @@ of leaving the terminal in a broken state.
 | `Tab`, `m` | Select the next mode |
 | `Shift+Tab`, `M` | Select the previous mode |
 | `Enter` | Start the selected scheduler, or switch to it when one is already running |
+| `a` | Open the custom-arguments field; `Enter` starts/switches with the typed arguments (session-only), `Esc` cancels |
 | `s` | Stop the running scheduler |
 | `r` | Restart the running scheduler; applies the selected mode when it differs |
 | `d` | Restore the scheduler and mode configured as default |
