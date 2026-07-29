@@ -43,6 +43,9 @@ unprivileged D-Bus client; scheduler lifecycle management remains in
 - Displays the kernel's own `sched_ext` state from sysfs and warns when it
   disagrees with the backend: schedulers attached outside the backend's
   control, crashed or watchdog-ejected schedulers, and ops-name mismatches.
+- Previews the arguments a selected mode is configured with, rendered in
+  the same shell-words form as `scxctl`, cached per scheduler and refreshed
+  when the daemon restarts.
 - Warns when a selected mode has no configured arguments and scheduler
   defaults will be used.
 - Stops, restarts, or restores the configured default scheduler. A restart
