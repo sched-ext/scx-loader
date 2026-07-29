@@ -107,7 +107,7 @@ fn draw_status_panel(frame: &mut Frame, app: &App, area: Rect) {
             Some(sched) if !status.args.is_empty() => {
                 lines.push(kv("State", "running", Color::Green));
                 lines.push(kv("Scheduler", strip_prefix(sched), Color::White));
-                lines.push(kv("Arguments", &status.args.join(" "), Color::White));
+                lines.push(kv("Arguments", &format_args(&status.args), Color::White));
             }
             Some(sched) => {
                 lines.push(kv("State", "running", Color::Green));
