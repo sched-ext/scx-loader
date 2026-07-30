@@ -15,9 +15,12 @@
         CurrentScheduler:
 
         The name of the currently running scheduler. If no scheduler is active,
-        this property will be set to "unknown".
+        this property will be set to "unknown". Changes are announced via
+        org.freedesktop.DBus.Properties.PropertiesChanged.
     -->
-    <property name="CurrentScheduler" type="s" access="read"/>
+    <property name="CurrentScheduler" type="s" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+    </property>
 
     <!--
         SchedulerMode:
@@ -26,44 +29,59 @@
         The currently active scheduler mode.  Scheduler modes allow you to
         apply pre-defined configurations to a scheduler that are
         optimized for different use cases. If no scheduler is active,
-        this property will be set to 0 (Auto).
+        this property will be set to 0 (Auto). Changes are announced via
+        org.freedesktop.DBus.Properties.PropertiesChanged.
     -->
-    <property name="SchedulerMode" type="u" access="read"/>
+    <property name="SchedulerMode" type="u" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+    </property>
 
     <!--
         CurrentSchedulerArgs:
 
         The arguments used for the currently running scheduler. If no scheduler
         is active or the scheduler was started with a predefined mode (not custom
-        arguments), this property will return an empty array.
+        arguments), this property will return an empty array. Changes are
+        announced via org.freedesktop.DBus.Properties.PropertiesChanged.
     -->
-    <property name="CurrentSchedulerArgs" type="as" access="read"/>
+    <property name="CurrentSchedulerArgs" type="as" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+    </property>
     <!--
         SupportedSchedulers:
 
         A list of the schedulers currently supported by the Scheduler Loader.
         The names of the supported schedulers will be listed as strings in
-        this array.
+        this array. Fixed for the lifetime of a daemon instance.
     -->
-    <property name="SupportedSchedulers" type="as" access="read"/>
+    <property name="SupportedSchedulers" type="as" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
+    </property>
 
     <!--
         DefaultScheduler:
 
         The name of the default scheduler configured in the config file.
         If no default scheduler is configured, this property will be set
-        to "unknown".
+        to "unknown". The config file is read once at startup, so this is
+        fixed for the lifetime of a daemon instance.
     -->
-    <property name="DefaultScheduler" type="s" access="read"/>
+    <property name="DefaultScheduler" type="s" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
+    </property>
 
     <!--
         DefaultMode:
         @sched_mode: 0 = Auto, 1 = Gaming, 2 = PowerSave, 3 = LowLatency, 4 = Server
 
         The default scheduler mode configured in the config file.
-        Defaults to 0 (Auto) if not explicitly configured.
+        Defaults to 0 (Auto) if not explicitly configured. The config file
+        is read once at startup, so this is fixed for the lifetime of a
+        daemon instance.
     -->
-    <property name="DefaultMode" type="u" access="read"/>
+    <property name="DefaultMode" type="u" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
+    </property>
 
     <!--
         SchedulerModes:

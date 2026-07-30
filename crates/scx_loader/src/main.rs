@@ -153,8 +153,8 @@ impl ScxLoader {
         self.state.args.clone().unwrap_or_default()
     }
 
-    /// Get list of supported schedulers
-    #[zbus(property)]
+    // Const for the daemon's lifetime; mirrors the shipped XML.
+    #[zbus(property(emits_changed_signal = "const"))]
     fn supported_schedulers(&self) -> Vec<&'static str> {
         vec![
             "scx_beerland",
@@ -177,7 +177,8 @@ impl ScxLoader {
     }
 
     /// Get the default scheduler configured in config file, returns "unknown" if not set
-    #[zbus(property)]
+    // Config is read once at startup; "const" as in the shipped XML.
+    #[zbus(property(emits_changed_signal = "const"))]
     fn default_scheduler(&self) -> String {
         if let Some(default_scx) = &self.default_sched {
             let default_scx: &str = default_scx.clone().into();
@@ -188,7 +189,8 @@ impl ScxLoader {
     }
 
     /// Get the default scheduler mode configured in config file
-    #[zbus(property)]
+    // Config is read once at startup; "const" as in the shipped XML.
+    #[zbus(property(emits_changed_signal = "const"))]
     fn default_mode(&self) -> SchedMode {
         self.default_mode
     }
