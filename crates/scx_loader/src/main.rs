@@ -13,6 +13,8 @@ mod logger;
 use scx_loader::dbus::LoaderClientProxy;
 use scx_loader::{SchedMode, SupportedSched, config};
 
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::process::ExitStatus;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -30,6 +32,9 @@ use tokio::time::Instant;
 use zbus::Connection;
 use zbus::interface;
 use zbus::message::Header;
+use zbus::names::InterfaceName;
+use zbus::object_server::SignalEmitter;
+use zbus::zvariant::Value;
 use zbus_polkit::policykit1::{AuthorityProxy, CheckAuthorizationFlags, Subject};
 
 #[derive(Debug, PartialEq)]
@@ -71,6 +76,35 @@ struct SchedState {
     mode: SchedMode,
     /// Custom arguments the scheduler was started with, if any.
     args: Option<Vec<String>>,
+}
+
+/// Which properties a transition touched ([`SchedState::diff`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ChangedProps {
+    scheduler: bool,
+    mode: bool,
+    args: bool,
+}
+
+impl ChangedProps {
+    #[cfg(test)]
+    const NONE: ChangedProps = ChangedProps {
+        scheduler: false,
+        mode: false,
+        args: false,
+    };
+}
+
+impl SchedState {
+    fn diff(&self, new: &SchedState) -> ChangedProps {
+        ChangedProps {
+            scheduler: self.scx != new.scx,
+            mode: self.mode != new.mode,
+            // `None` and empty `Some` both read as an empty array — not a change.
+            args: self.args.as_deref().unwrap_or_default()
+                != new.args.as_deref().unwrap_or_default(),
+        }
+    }
 }
 
 struct ScxLoader {
@@ -173,6 +207,7 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         scx_name: SupportedSched,
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
@@ -182,11 +217,15 @@ impl ScxLoader {
         let _ = self
             .channel
             .send(ScxMessage::StartSched((scx_name.clone(), sched_mode)));
-        self.state = SchedState {
-            scx: Some(scx_name),
-            mode: sched_mode,
-            args: None,
-        };
+        self.apply_and_signal(
+            &emitter,
+            SchedState {
+                scx: Some(scx_name),
+                mode: sched_mode,
+                args: None,
+            },
+        )
+        .await;
 
         Ok(())
     }
@@ -195,6 +234,7 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         scx_name: SupportedSched,
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
@@ -205,12 +245,16 @@ impl ScxLoader {
             scx_name.clone(),
             scx_args.clone(),
         )));
-        self.state = SchedState {
-            scx: Some(scx_name),
-            // custom arguments carry no mode; reset to auto
-            mode: SchedMode::Auto,
-            args: Some(scx_args),
-        };
+        self.apply_and_signal(
+            &emitter,
+            SchedState {
+                scx: Some(scx_name),
+                // custom arguments carry no mode; reset to auto
+                mode: SchedMode::Auto,
+                args: Some(scx_args),
+            },
+        )
+        .await;
 
         Ok(())
     }
@@ -219,6 +263,7 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         scx_name: SupportedSched,
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
@@ -228,11 +273,15 @@ impl ScxLoader {
         let _ = self
             .channel
             .send(ScxMessage::SwitchSched((scx_name.clone(), sched_mode)));
-        self.state = SchedState {
-            scx: Some(scx_name),
-            mode: sched_mode,
-            args: None,
-        };
+        self.apply_and_signal(
+            &emitter,
+            SchedState {
+                scx: Some(scx_name),
+                mode: sched_mode,
+                args: None,
+            },
+        )
+        .await;
 
         Ok(())
     }
@@ -241,6 +290,7 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         scx_name: SupportedSched,
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
@@ -251,12 +301,16 @@ impl ScxLoader {
             scx_name.clone(),
             scx_args.clone(),
         )));
-        self.state = SchedState {
-            scx: Some(scx_name),
-            // custom arguments carry no mode; reset to auto
-            mode: SchedMode::Auto,
-            args: Some(scx_args),
-        };
+        self.apply_and_signal(
+            &emitter,
+            SchedState {
+                scx: Some(scx_name),
+                // custom arguments carry no mode; reset to auto
+                mode: SchedMode::Auto,
+                args: Some(scx_args),
+            },
+        )
+        .await;
 
         Ok(())
     }
@@ -265,6 +319,7 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         if let Some(current_scx) = self.state.scx.clone() {
@@ -272,12 +327,17 @@ impl ScxLoader {
 
             log::info!("stopping {scx_name:?}..");
             let _ = self.channel.send(ScxMessage::StopSched);
-            self.state = SchedState {
-                scx: None,
-                // deliberate: historical behavior.
-                mode: self.state.mode,
-                args: None,
-            };
+            let mode = self.state.mode;
+            self.apply_and_signal(
+                &emitter,
+                SchedState {
+                    scx: None,
+                    // deliberate: historical behavior.
+                    mode,
+                    args: None,
+                },
+            )
+            .await;
         }
 
         Ok(())
@@ -312,10 +372,11 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
 
-        if let Some(default_scx) = &self.default_sched {
+        if let Some(default_scx) = self.default_sched.clone() {
             let scx_name: &str = default_scx.clone().into();
             log::info!(
                 "restoring default scheduler {scx_name:?} with mode {:?}..",
@@ -326,17 +387,60 @@ impl ScxLoader {
                 default_scx.clone(),
                 self.default_mode,
             )));
-            self.state = SchedState {
-                scx: Some(default_scx.clone()),
-                mode: self.default_mode,
-                args: None,
-            };
+            let mode = self.default_mode;
+            self.apply_and_signal(
+                &emitter,
+                SchedState {
+                    scx: Some(default_scx),
+                    mode,
+                    args: None,
+                },
+            )
+            .await;
 
             Ok(())
         } else {
             Err(zbus::fdo::Error::Failed(
                 "No default scheduler is configured".to_string(),
             ))
+        }
+    }
+}
+
+/// Non-D-Bus helpers; anything inside `#[interface]` becomes a D-Bus member.
+impl ScxLoader {
+    /// Assigns `new`, best-effort emits one `PropertiesChanged` for the diff.
+    async fn apply_and_signal(&mut self, emitter: &SignalEmitter<'_>, new: SchedState) {
+        let changed = self.state.diff(&new);
+        self.state = new;
+
+        let mut properties = HashMap::with_capacity(3);
+        if changed.scheduler {
+            properties.insert("CurrentScheduler", Value::from(self.current_scheduler()));
+        }
+        if changed.mode {
+            properties.insert("SchedulerMode", Value::from(self.scheduler_mode()));
+        }
+        if changed.args {
+            properties.insert(
+                "CurrentSchedulerArgs",
+                Value::from(self.current_scheduler_args()),
+            );
+        }
+        if properties.is_empty() {
+            return;
+        }
+
+        if let Err(err) = zbus::fdo::Properties::properties_changed(
+            emitter,
+            // Known-good literal; the unchecked const constructor cannot panic.
+            InterfaceName::from_static_str_unchecked("org.scx.Loader"),
+            properties,
+            Cow::Borrowed(&[] as &[&str]),
+        )
+        .await
+        {
+            log::warn!("failed to emit PropertiesChanged for scheduler state: {err}");
         }
     }
 }
@@ -764,4 +868,109 @@ async fn check_authorization_inter(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(scx: Option<SupportedSched>, mode: SchedMode, args: Option<&[&str]>) -> SchedState {
+        SchedState {
+            scx,
+            mode,
+            args: args.map(|a| a.iter().map(ToString::to_string).collect()),
+        }
+    }
+
+    /// One row per state-moving method.
+    #[test]
+    fn diff_transition_table() {
+        let idle = state(None, SchedMode::Auto, None);
+        let gaming = state(Some(SupportedSched::Bpfland), SchedMode::Gaming, None);
+        let custom = state(
+            Some(SupportedSched::Bpfland),
+            SchedMode::Auto,
+            Some(&["-k", "-s", "5000"]),
+        );
+
+        // Fresh start into a mode: scheduler and mode move, args stay empty.
+        assert_eq!(
+            idle.diff(&gaming),
+            ChangedProps {
+                scheduler: true,
+                mode: true,
+                args: false
+            }
+        );
+
+        // Mode run → args run, same scheduler: mode resets, args appear.
+        assert_eq!(
+            gaming.diff(&custom),
+            ChangedProps {
+                scheduler: false,
+                mode: true,
+                args: true
+            }
+        );
+
+        // Same scheduler, same mode, different arguments — only args.
+        let custom2 = state(
+            Some(SupportedSched::Bpfland),
+            SchedMode::Auto,
+            Some(&["--slice-us", "2000"]),
+        );
+        assert_eq!(
+            custom.diff(&custom2),
+            ChangedProps {
+                scheduler: false,
+                mode: false,
+                args: true
+            }
+        );
+
+        // `None` and `Some([])` both read as an empty array — no fake change.
+        let empty_custom = state(Some(SupportedSched::Bpfland), SchedMode::Auto, Some(&[]));
+        let plain_auto = state(Some(SupportedSched::Bpfland), SchedMode::Auto, None);
+        assert_eq!(plain_auto.diff(&empty_custom), ChangedProps::NONE);
+        assert_eq!(empty_custom.diff(&plain_auto), ChangedProps::NONE);
+
+        // Restart re-applies the identical state: nothing may be emitted.
+        assert_eq!(gaming.diff(&gaming.clone()), ChangedProps::NONE);
+
+        // Stop keeps the last mode: only the scheduler property moves.
+        let stopped = state(None, SchedMode::Gaming, None);
+        assert_eq!(
+            gaming.diff(&stopped),
+            ChangedProps {
+                scheduler: true,
+                mode: false,
+                args: false
+            }
+        );
+
+        // Stop after a custom-arguments run also clears the args.
+        let stopped_auto = state(None, SchedMode::Auto, None);
+        assert_eq!(
+            custom.diff(&stopped_auto),
+            ChangedProps {
+                scheduler: true,
+                mode: false,
+                args: true
+            }
+        );
+    }
+
+    /// Pins `property_values` to the declared names, signatures and empty-state values.
+    #[test]
+    fn emitted_value_signatures_match_the_declared_properties() {
+        assert_eq!(
+            Value::from(String::from("scx_bpfland")).value_signature(),
+            "s"
+        );
+        assert_eq!(Value::from(SchedMode::Gaming).value_signature(), "u");
+        assert_eq!(
+            Value::from(vec![String::from("-k")]).value_signature(),
+            "as"
+        );
+    }
 }
