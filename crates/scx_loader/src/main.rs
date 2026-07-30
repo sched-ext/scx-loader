@@ -62,10 +62,19 @@ enum RunnerMessage {
     Restart((SupportedSched, Vec<String>)),
 }
 
+/// The three mutable properties of `org.scx.Loader` as one value.
+#[derive(Debug, Clone, PartialEq)]
+struct SchedState {
+    /// Currently running scheduler, `None` when nothing runs.
+    scx: Option<SupportedSched>,
+    /// Only meaningful while `args` is `None`.
+    mode: SchedMode,
+    /// Custom arguments the scheduler was started with, if any.
+    args: Option<Vec<String>>,
+}
+
 struct ScxLoader {
-    current_scx: Option<SupportedSched>,
-    current_mode: SchedMode,
-    current_args: Option<Vec<String>>,
+    state: SchedState,
     channel: UnboundedSender<ScxMessage>,
     // Store default configuration from config file
     default_sched: Option<SupportedSched>,
@@ -89,7 +98,7 @@ impl ScxLoader {
     /// Get currently running scheduler, in case non is running return "unknown"
     #[zbus(property)]
     fn current_scheduler(&self) -> String {
-        if let Some(current_scx) = &self.current_scx {
+        if let Some(current_scx) = &self.state.scx {
             let current_scx: &str = current_scx.clone().into();
             log::debug!("called {current_scx:?}");
             current_scx.into()
@@ -101,13 +110,13 @@ impl ScxLoader {
     /// Get scheduler mode
     #[zbus(property)]
     fn scheduler_mode(&self) -> SchedMode {
-        self.current_mode
+        self.state.mode
     }
 
     /// Get arguments used for currently running scheduler
     #[zbus(property)]
     fn current_scheduler_args(&self) -> Vec<String> {
-        self.current_args.clone().unwrap_or_default()
+        self.state.args.clone().unwrap_or_default()
     }
 
     /// Get list of supported schedulers
@@ -196,9 +205,11 @@ impl ScxLoader {
         let _ = self
             .channel
             .send(ScxMessage::StartSched((scx_name.clone(), sched_mode)));
-        self.current_scx = Some(scx_name);
-        self.current_mode = sched_mode;
-        self.current_args = None;
+        self.state = SchedState {
+            scx: Some(scx_name),
+            mode: sched_mode,
+            args: None,
+        };
 
         Ok(())
     }
@@ -217,10 +228,12 @@ impl ScxLoader {
             scx_name.clone(),
             scx_args.clone(),
         )));
-        self.current_scx = Some(scx_name);
-        // reset mode to auto
-        self.current_mode = SchedMode::Auto;
-        self.current_args = Some(scx_args);
+        self.state = SchedState {
+            scx: Some(scx_name),
+            // custom arguments carry no mode; reset to auto
+            mode: SchedMode::Auto,
+            args: Some(scx_args),
+        };
 
         Ok(())
     }
@@ -238,9 +251,11 @@ impl ScxLoader {
         let _ = self
             .channel
             .send(ScxMessage::SwitchSched((scx_name.clone(), sched_mode)));
-        self.current_scx = Some(scx_name);
-        self.current_mode = sched_mode;
-        self.current_args = None;
+        self.state = SchedState {
+            scx: Some(scx_name),
+            mode: sched_mode,
+            args: None,
+        };
 
         Ok(())
     }
@@ -259,10 +274,12 @@ impl ScxLoader {
             scx_name.clone(),
             scx_args.clone(),
         )));
-        self.current_scx = Some(scx_name);
-        // reset mode to auto
-        self.current_mode = SchedMode::Auto;
-        self.current_args = Some(scx_args);
+        self.state = SchedState {
+            scx: Some(scx_name),
+            // custom arguments carry no mode; reset to auto
+            mode: SchedMode::Auto,
+            args: Some(scx_args),
+        };
 
         Ok(())
     }
@@ -273,13 +290,17 @@ impl ScxLoader {
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
-        if let Some(current_scx) = &self.current_scx {
-            let scx_name: &str = current_scx.clone().into();
+        if let Some(current_scx) = self.state.scx.clone() {
+            let scx_name: &str = current_scx.into();
 
             log::info!("stopping {scx_name:?}..");
             let _ = self.channel.send(ScxMessage::StopSched);
-            self.current_scx = None;
-            self.current_args = None;
+            self.state = SchedState {
+                scx: None,
+                // deliberate: historical behavior.
+                mode: self.state.mode,
+                args: None,
+            };
         }
 
         Ok(())
@@ -291,14 +312,14 @@ impl ScxLoader {
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
-        if let Some(current_scx) = &self.current_scx {
+        if let Some(current_scx) = &self.state.scx {
             let scx_name: &str = current_scx.clone().into();
 
             log::info!("restarting {scx_name:?}..");
             let _ = self.channel.send(ScxMessage::RestartSched((
                 current_scx.clone(),
-                self.current_args.clone(),
-                self.current_mode,
+                self.state.args.clone(),
+                self.state.mode,
             )));
 
             Ok(())
@@ -328,9 +349,11 @@ impl ScxLoader {
                 default_scx.clone(),
                 self.default_mode,
             )));
-            self.current_scx = Some(default_scx.clone());
-            self.current_mode = self.default_mode;
-            self.current_args = None;
+            self.state = SchedState {
+                scx: Some(default_scx.clone()),
+                mode: self.default_mode,
+                args: None,
+            };
 
             Ok(())
         } else {
@@ -445,9 +468,11 @@ async fn main() -> Result<()> {
         .at(
             "/org/scx/Loader",
             ScxLoader {
-                current_scx: None,
-                current_mode: SchedMode::Auto,
-                current_args: None,
+                state: SchedState {
+                    scx: None,
+                    mode: SchedMode::Auto,
+                    args: None,
+                },
                 channel: channel.clone(),
                 default_sched: config.default_sched.clone(),
                 default_mode: config.default_mode.unwrap_or(SchedMode::Auto),
