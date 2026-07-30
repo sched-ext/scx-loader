@@ -141,7 +141,7 @@ impl ScxLoader {
         }
     }
 
-    /// Get scheduler mode
+    /// Get scheduler mode; `Auto` whenever no scheduler is active
     #[zbus(property)]
     fn scheduler_mode(&self) -> SchedMode {
         self.state.mode
@@ -347,13 +347,12 @@ impl ScxLoader {
 
             log::info!("stopping {scx_name:?}..");
             let _ = self.channel.send(ScxMessage::StopSched);
-            let mode = self.state.mode;
             self.apply_and_signal(
                 &emitter,
                 SchedState {
                     scx: None,
-                    // deliberate: historical behavior.
-                    mode,
+                    // Documented contract: Auto when no scheduler is active.
+                    mode: SchedMode::Auto,
                     args: None,
                 },
             )
@@ -963,14 +962,13 @@ mod tests {
         // Restart re-applies the identical state: nothing may be emitted.
         assert_eq!(gaming.diff(&gaming.clone()), ChangedProps::NONE);
 
-        // Stop keeps the last mode (historical behavior), so only the
-        // scheduler property moves when args were already empty.
-        let stopped = state(None, SchedMode::Gaming, None);
+        // Stop resets the mode per the documented contract.
+        let stopped = state(None, SchedMode::Auto, None);
         assert_eq!(
             gaming.diff(&stopped),
             ChangedProps {
                 scheduler: true,
-                mode: false,
+                mode: true,
                 args: false
             }
         );
