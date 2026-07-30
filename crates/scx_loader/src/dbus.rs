@@ -54,20 +54,21 @@ pub trait LoaderClient {
     fn restore_default(&self) -> zbus::Result<()>;
 
     /// The name of the currently running scheduler. If no scheduler is active,
-    /// this property will be set to "unknown".
+    /// this property will be set to "unknown". Changes are signalled;
+    /// older daemons don't emit — keep a fallback poll.
     #[zbus(property)]
     fn current_scheduler(&self) -> zbus::Result<String>;
 
     /// The currently active scheduler mode.  Scheduler modes allow you to
     /// apply pre-defined configurations to a scheduler that are
     /// optimized for different use cases. If no scheduler is active,
-    /// this property will be set to 0 (Auto).
+    /// this property will be set to 0 (Auto). Changes are signalled.
     #[zbus(property)]
     fn scheduler_mode(&self) -> zbus::Result<SchedMode>;
 
     /// The arguments used for the currently running scheduler. If no scheduler
     /// is active or the scheduler was started with a predefined mode (not custom
-    /// arguments), this property will return an empty array.
+    /// arguments), this property will return an empty array. Changes are signalled.
     #[zbus(property)]
     fn current_scheduler_args(&self) -> zbus::Result<Vec<String>>;
 
