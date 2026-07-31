@@ -48,6 +48,23 @@
       <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
     </property>
     <!--
+        DaemonGeneration:
+
+        A value unique to this daemon instance (the unique name of its
+        bus connection, e.g. ":1.247", which the bus guarantees never to
+        reuse for its lifetime). It changes exactly when the daemon
+        instance is replaced, and the new instance announces it via
+        org.freedesktop.DBus.Properties.PropertiesChanged together with
+        the full runtime state. Clients should treat only its *change* as
+        meaningful: it lets a value-comparing subscriber notice an
+        instance replacement even when every runtime property is
+        identical to what the previous instance left behind.
+    -->
+    <property name="DaemonGeneration" type="s" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+    </property>
+
+    <!--
         SupportedSchedulers:
 
         A list of the schedulers currently supported by the Scheduler Loader.
