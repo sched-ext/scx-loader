@@ -55,8 +55,9 @@ unprivileged D-Bus client; scheduler lifecycle management remains in
   mode.
 - Auto-detects the management backend at startup (preferring `scx_loader`),
   with explicit selection via `--backend` and runtime switching on a key.
-- Refreshes status periodically, including changes made by `scxctl`, desktop
-  applets, or another `scxtui` instance.
+- Follows changes made by `scxctl`, desktop applets, or another `scxtui`
+  instance: live via the loader's `PropertiesChanged` signals where the
+  daemon emits them, with a periodic poll as fallback and safety net.
 - Browses logs from `scx_loader.service` and `scx.service` for the current
   or previous boot.
 - Highlights journal messages according to their syslog priority and
@@ -176,10 +177,13 @@ journal priority information for message highlighting.
 The `scx_loader` backend communicates with `org.scx.Loader` over the system
 D-Bus. The daemon's advertised scheduler list is treated as authoritative,
 so locally added schedulers and version differences are not rejected
-prematurely by a client-side enum. D-Bus property caching is disabled
-because scheduler state can change outside this process; `scxtui`
-periodically queries the daemon so the displayed state remains accurate when
-another client performs an operation.
+prematurely by a client-side enum. Scheduler state changed outside this
+process (by `scxctl`, an applet, or another `scxtui`) is picked up live
+from the daemon's `PropertiesChanged` signals via zbus's property cache;
+a lazy background poll reconciles the view as a safety net. Against older
+daemons that do not emit the signal, `scxtui` detects the silence and
+falls back to the previous polling cadence, so displayed state remains
+accurate either way.
 
 The `scx.service` backend edits `SCX_SCHEDULER` in the service's
 configuration file (atomically, via a temporary file and rename) and drives
