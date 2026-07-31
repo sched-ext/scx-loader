@@ -192,6 +192,8 @@ pub struct App {
     pushed: Option<RuntimeStatus>,
     /// First push movement relaxes the poll; the first read is baseline.
     push_confirmed: bool,
+    /// Previous tick's dispute bit; makes the tripwire edge-triggered.
+    kernel_disputed: bool,
     /// Custom-arguments field; `Some` while the user is typing. While
     /// open it owns every key press.
     pub args_input: Option<ArgsInput>,
@@ -231,6 +233,7 @@ impl App {
             daemon_instance: None,
             pushed: None,
             push_confirmed: false,
+            kernel_disputed: false,
             args_input: None,
             message: None,
             last_action: None,
@@ -352,6 +355,9 @@ impl App {
 
             // Pushed changes do not reset the safety poll.
             self.apply_pushed_status();
+            if self.reconcile_kernel_dispute() {
+                last_refresh = Instant::now();
+            }
             if last_refresh.elapsed() >= self.refresh_interval() {
                 self.refresh_status();
                 last_refresh = Instant::now();
@@ -889,6 +895,49 @@ press Esc and use Enter instead",
         } else {
             REFRESH_EVERY
         }
+    }
+
+    /// The panel's warning; the event loop reuses it as a tripwire.
+    pub fn kernel_warning(&self) -> Option<String> {
+        let kernel = self.kernel.as_ref()?;
+        let loader_current = self
+            .status
+            .as_ref()
+            .and_then(|status| status.current.as_deref());
+        match (loader_current, kernel.enabled()) {
+            // Loader thinks nothing runs, kernel disagrees: something was
+            // started behind the loader's back (scx.service, a manual run).
+            (None, true) => {
+                Some("a scheduler is attached outside of scx_loader's control".to_owned())
+            }
+            // Loader thinks a scheduler runs, kernel disagrees: it crashed
+            // or was ejected (watchdog) without the loader noticing yet.
+            (Some(sched), false) => Some(format!(
+                "loader reports {sched}, but the kernel shows no attached scheduler"
+            )),
+            // Both agree something runs — but is it the same something?
+            (Some(sched), true) if !kernel.matches(sched) => {
+                let ops = kernel.ops.as_deref().unwrap_or("?");
+                Some(format!(
+                    "loader reports {sched}, but the kernel ops name is \"{ops}\""
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Re-asks immediately when a dispute appears (a dead daemon emits
+    /// nothing). Edge-triggered; returns whether it refreshed.
+    fn reconcile_kernel_dispute(&mut self) -> bool {
+        let disputed = self.kernel_warning().is_some();
+        let fire = disputed && !self.kernel_disputed;
+        if fire {
+            self.refresh_status();
+        }
+        // Post-refresh truth: unresolved disputes stand without
+        // re-triggering.
+        self.kernel_disputed = self.kernel_warning().is_some();
+        fire
     }
 
     /// Doorbell, never payload: a movement triggers one authoritative
@@ -1568,6 +1617,44 @@ mod tests {
 
         assert!(app.status.is_none());
         assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+    }
+
+    fn disabled_kernel() -> KernelState {
+        KernelState {
+            state: "disabled".into(),
+            ops: None,
+        }
+    }
+
+    #[test]
+    fn kernel_dispute_is_edge_triggered_and_rearms_after_refresh() {
+        let backend = StubBackend::new();
+        let queries = Rc::clone(&backend.status_queries);
+        let mut app = app_with_backend(backend);
+
+        // A standing dispute is not an edge and must not hammer the
+        // daemon every tick.
+        app.status = Some(running_status("scx_cake"));
+        app.kernel = Some(disabled_kernel());
+        app.kernel_disputed = true;
+        assert!(!app.reconcile_kernel_dispute());
+        assert_eq!(*queries.borrow(), 0);
+
+        // Arm the edge. The authoritative refresh in this stub resolves
+        // the disagreement, so the stored state must be recomputed from
+        // the post-refresh snapshot rather than the stale pre-refresh
+        // bit.
+        app.kernel_disputed = false;
+        assert!(app.reconcile_kernel_dispute());
+        assert_eq!(*queries.borrow(), 1);
+        assert!(!app.kernel_disputed);
+
+        // A new disagreement before another tick is therefore a new edge
+        // and gets its own immediate refresh.
+        app.status = Some(running_status("scx_cake"));
+        app.kernel = Some(disabled_kernel());
+        assert!(app.reconcile_kernel_dispute());
+        assert_eq!(*queries.borrow(), 2);
     }
 
     #[test]
