@@ -45,6 +45,17 @@
       <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
     </property>
     <!--
+        DaemonGeneration:
+
+        The instance's unique bus name; changes exactly on daemon
+        replacement, announced with the full runtime state. Only its
+        change is meaningful.
+    -->
+    <property name="DaemonGeneration" type="s" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+    </property>
+
+    <!--
         SupportedSchedulers:
 
         A list of the schedulers currently supported by the Scheduler Loader.
