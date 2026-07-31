@@ -276,31 +276,9 @@ fn draw_kernel_section(app: &App, lines: &mut Vec<Line>) {
         color,
     ));
 
-    let loader_current = app
-        .status
-        .as_ref()
-        .and_then(|status| status.current.as_deref());
-
-    let warning = match (loader_current, kernel.enabled()) {
-        // Loader thinks nothing runs, kernel disagrees: something was
-        // started behind the loader's back (scx.service, a manual run).
-        (None, true) => Some("a scheduler is attached outside of scx_loader's control".to_owned()),
-        // Loader thinks a scheduler runs, kernel disagrees: it crashed or
-        // was ejected (watchdog) without the loader noticing yet.
-        (Some(sched), false) => Some(format!(
-            "loader reports {sched}, but the kernel shows no attached scheduler"
-        )),
-        // Both agree something runs — but is it the same something?
-        (Some(sched), true) if !kernel.matches(sched) => {
-            let ops = kernel.ops.as_deref().unwrap_or("?");
-            Some(format!(
-                "loader reports {sched}, but the kernel ops name is \"{ops}\""
-            ))
-        }
-        _ => None,
-    };
-
-    if let Some(text) = warning {
+    // Classification lives on App (`kernel_warning`), shared with the
+    // event loop's dispute tripwire.
+    if let Some(text) = app.kernel_warning() {
         lines.push(Line::from(Span::styled(
             format!("  ⚠ {text}"),
             Style::default().fg(Color::Yellow),
