@@ -76,6 +76,10 @@ pub trait LoaderClient {
     #[zbus(property)]
     fn current_scheduler_args(&self) -> zbus::Result<Vec<String>>;
 
+    /// Changes exactly on daemon replacement; absent on older daemons.
+    #[zbus(property)]
+    fn daemon_generation(&self) -> zbus::Result<String>;
+
     /// A list of the schedulers currently supported by the Scheduler Loader.
     /// The names of the supported schedulers will be listed as strings in
     /// this array.

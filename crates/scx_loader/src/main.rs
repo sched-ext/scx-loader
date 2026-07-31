@@ -96,6 +96,23 @@ impl ChangedProps {
 }
 
 impl SchedState {
+    /// Getter representation, diff order — the single source for signal
+    /// dictionaries.
+    fn property_values(&self) -> [(&'static str, Value<'static>); 3] {
+        let scheduler: &str = match &self.scx {
+            Some(scx) => scx.clone().into(),
+            None => "unknown",
+        };
+        [
+            ("CurrentScheduler", Value::from(scheduler.to_owned())),
+            ("SchedulerMode", Value::from(self.mode)),
+            (
+                "CurrentSchedulerArgs",
+                Value::from(self.args.clone().unwrap_or_default()),
+            ),
+        ]
+    }
+
     fn diff(&self, new: &SchedState) -> ChangedProps {
         ChangedProps {
             scheduler: self.scx != new.scx,
@@ -109,6 +126,9 @@ impl SchedState {
 
 struct ScxLoader {
     state: SchedState,
+    /// Unique per instance (the connection's bus name); only its *change*
+    /// is meaningful.
+    generation: String,
     channel: UnboundedSender<ScxMessage>,
     // Store default configuration from config file
     default_sched: Option<SupportedSched>,
@@ -153,6 +173,15 @@ impl ScxLoader {
         self.state.args.clone().unwrap_or_default()
     }
 
+    /// Changes exactly on instance replacement. Deliberately not "const":
+    /// subscribers do see it change, and the startup announcement is that
+    /// change signal.
+    #[zbus(property)]
+    fn daemon_generation(&self) -> String {
+        self.generation.clone()
+    }
+
+    /// Get list of supported schedulers
     // Const for the daemon's lifetime; mirrors the shipped XML.
     #[zbus(property(emits_changed_signal = "const"))]
     fn supported_schedulers(&self) -> Vec<&'static str> {
@@ -441,35 +470,36 @@ impl ScxLoader {
         let changed = self.state.diff(&new);
         self.state = new;
 
-        let mut properties = HashMap::with_capacity(3);
-        if changed.scheduler {
-            properties.insert("CurrentScheduler", Value::from(self.current_scheduler()));
-        }
-        if changed.mode {
-            properties.insert("SchedulerMode", Value::from(self.scheduler_mode()));
-        }
-        if changed.args {
-            properties.insert(
-                "CurrentSchedulerArgs",
-                Value::from(self.current_scheduler_args()),
-            );
-        }
+        let flags = [changed.scheduler, changed.mode, changed.args];
+        let properties: HashMap<_, _> = self
+            .state
+            .property_values()
+            .into_iter()
+            .zip(flags)
+            .filter_map(|(entry, changed)| changed.then_some(entry))
+            .collect();
         if properties.is_empty() {
             return;
         }
 
-        if let Err(err) = zbus::fdo::Properties::properties_changed(
-            emitter,
-            // Known-good literal; the unchecked const constructor cannot panic.
-            InterfaceName::from_static_str_unchecked("org.scx.Loader"),
-            properties,
-            Cow::Borrowed(&[] as &[&str]),
-        )
-        .await
-        {
+        if let Err(err) = emit_properties_changed(emitter, properties).await {
             log::warn!("failed to emit PropertiesChanged for scheduler state: {err}");
         }
     }
+}
+
+async fn emit_properties_changed(
+    emitter: &SignalEmitter<'_>,
+    properties: HashMap<&str, Value<'_>>,
+) -> zbus::Result<()> {
+    zbus::fdo::Properties::properties_changed(
+        emitter,
+        // Known-good literal; the unchecked const constructor cannot panic.
+        InterfaceName::from_static_str_unchecked("org.scx.Loader"),
+        properties,
+        Cow::Borrowed(&[] as &[&str]),
+    )
+    .await
 }
 
 // Monitors CPU utilization and enables scx_lavd when utilization of any CPUs is > 90%
@@ -571,6 +601,11 @@ async fn main() -> Result<()> {
 
     // register dbus interface
     let connection = Connection::system().await?;
+    // The unique bus name is the instance identity.
+    let generation = connection
+        .unique_name()
+        .context("system bus connection has no unique name")?
+        .to_string();
     connection
         .object_server()
         .at(
@@ -581,6 +616,7 @@ async fn main() -> Result<()> {
                     mode: SchedMode::Auto,
                     args: None,
                 },
+                generation,
                 channel: channel.clone(),
                 default_sched: config.default_sched.clone(),
                 default_mode: config.default_mode.unwrap_or(SchedMode::Auto),
@@ -590,6 +626,24 @@ async fn main() -> Result<()> {
         .await?;
 
     connection.request_name("org.scx.Loader").await?;
+
+    // Unconditional: zbus caches update only from signal entries.
+    let iface_ref = connection
+        .object_server()
+        .interface::<_, ScxLoader>("/org/scx/Loader")
+        .await?;
+    {
+        let iface = iface_ref.get().await;
+        let mut announcement: HashMap<_, _> = iface.state.property_values().into_iter().collect();
+        // The generation is what makes the announcement visible even
+        // when every runtime value is identical to the previous
+        // instance's — a value-comparing subscriber has nothing else to
+        // notice a silent idle-to-idle replacement by.
+        announcement.insert("DaemonGeneration", Value::from(iface.generation.clone()));
+        if let Err(err) = emit_properties_changed(iface_ref.signal_emitter(), announcement).await {
+            log::warn!("failed to announce the initial state: {err}");
+        }
+    }
 
     // if user set default scheduler, then start it
     if let Some(default_sched) = &config.default_sched {
@@ -990,23 +1044,46 @@ mod tests {
         );
     }
 
-    /// The values placed in the hand-built `PropertiesChanged` dictionary
-    /// must serialize with the same signatures the introspection XML
-    /// declares for the properties ("s", "u", "as") — otherwise a
-    /// subscriber's cache would hold differently-typed values than a Get
-    /// would return. The property getters go through zbus's own
-    /// serialization and cannot drift; this pins the manual `Value`
-    /// conversions to the same contract.
+    /// Every hand-built `PropertiesChanged` dictionary — the diff
+    /// emission and the startup announcement alike — draws its entries
+    /// from `property_values`, so this pins that single source to the
+    /// contract: the names and the signatures the introspection XML
+    /// declares ("s", "u", "as"), and the representation the property
+    /// getters expose for "nothing" ("unknown", an empty array).
     #[test]
-    fn emitted_value_signatures_match_the_declared_properties() {
+    fn property_values_match_the_declared_properties() {
+        let [(n1, v1), (n2, v2), (n3, v3)] = state(None, SchedMode::Gaming, None).property_values();
         assert_eq!(
-            Value::from(String::from("scx_bpfland")).value_signature(),
+            (n1, v1.value_signature().to_string().as_str()),
+            ("CurrentScheduler", "s")
+        );
+        assert_eq!(
+            (n2, v2.value_signature().to_string().as_str()),
+            ("SchedulerMode", "u")
+        );
+        assert_eq!(
+            (n3, v3.value_signature().to_string().as_str()),
+            ("CurrentSchedulerArgs", "as")
+        );
+        assert_eq!(v1, Value::from(String::from("unknown")));
+        assert_eq!(v2, Value::from(SchedMode::Gaming));
+        assert_eq!(v3, Value::from(Vec::<String>::new()));
+
+        // The announcement's extra key: a unique bus name, wire type "s".
+        assert_eq!(
+            Value::from(String::from(":1.247"))
+                .value_signature()
+                .to_string(),
             "s"
         );
-        assert_eq!(Value::from(SchedMode::Gaming).value_signature(), "u");
-        assert_eq!(
-            Value::from(vec![String::from("-k")]).value_signature(),
-            "as"
-        );
+
+        let [(_, running), _, (_, args)] = state(
+            Some(SupportedSched::Bpfland),
+            SchedMode::Auto,
+            Some(&["-k"]),
+        )
+        .property_values();
+        assert_eq!(running, Value::from(String::from("scx_bpfland")));
+        assert_eq!(args, Value::from(vec![String::from("-k")]));
     }
 }
