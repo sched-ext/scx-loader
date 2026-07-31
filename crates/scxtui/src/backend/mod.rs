@@ -39,7 +39,8 @@ pub struct Capabilities {
 }
 
 /// Snapshot of the scheduler state as reported by the backend.
-#[derive(Debug, Clone)]
+// PartialEq: consumers act on a *change* between snapshots, never absolute values.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Status {
     /// Currently running scheduler (full name, e.g. `scx_bpfland`),
     /// or `None` when nothing is running.
@@ -52,6 +53,19 @@ pub struct Status {
     pub default_sched: Option<String>,
     /// Default mode from the config file.
     pub default_mode: SchedMode,
+}
+
+/// The signal-emitted properties — a movement detector, never a payload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeStatus {
+    /// See [`Status::current`].
+    pub current: Option<String>,
+    /// See [`Status::mode`].
+    pub mode: SchedMode,
+    /// See [`Status::args`].
+    pub args: Vec<String>,
+    /// Rings on replacement with identical values; never data.
+    pub generation: String,
 }
 
 /// Common interface every scheduler-management backend implements.
@@ -79,6 +93,11 @@ pub trait SchedulerBackend {
     fn capabilities(&self) -> Capabilities;
 
     fn status(&self) -> Result<Status>;
+
+    /// Push-channel snapshot; `Ok(None)` = no channel. A doorbell, never data.
+    fn cached_status(&self) -> Result<Option<RuntimeStatus>> {
+        Ok(None)
+    }
 
     fn supported_schedulers(&self) -> Result<Vec<String>>;
 
