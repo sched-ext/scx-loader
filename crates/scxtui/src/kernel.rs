@@ -31,16 +31,21 @@ impl KernelState {
 
     /// Whether `loader_name` (full name, e.g. `scx_lavd`) plausibly matches
     /// the ops the kernel reports. Ops names are chosen by each scheduler
-    /// and some embed extra detail — bpfland registers e.g.
-    /// `bpfland_1.1.2_x86_64_unknown_linux_gnu` — so beyond an exact match
-    /// (with or without the `scx_` prefix) an ops name that *starts with*
-    /// the scheduler name followed by `_` also counts. Used for a soft
-    /// warning only, so a rare false negative is acceptable.
+    /// and some embed extra detail, with or without the `scx_` prefix —
+    /// bpfland registers e.g. `bpfland_1.1.2_x86_64_unknown_linux_gnu`,
+    /// flow registers `scx_flow_3.1.1_x86_64_unknown_linux_gnu` — so
+    /// beyond an exact match (with or without the prefix) an ops name
+    /// that *starts with* either form of the scheduler name followed by
+    /// `_` also counts. Used for a soft warning only, so a rare false
+    /// negative is acceptable.
     pub fn matches(&self, loader_name: &str) -> bool {
         let stripped = loader_name.strip_prefix("scx_").unwrap_or(loader_name);
         self.ops.as_deref().is_some_and(|ops| {
             ops == loader_name
                 || ops == stripped
+                || ops
+                    .strip_prefix(loader_name)
+                    .is_some_and(|rest| rest.starts_with('_'))
                 || ops
                     .strip_prefix(stripped)
                     .is_some_and(|rest| rest.starts_with('_'))
@@ -91,6 +96,17 @@ mod tests {
     fn matches_versioned_ops_suffix() {
         // bpfland registers e.g. "bpfland_1.1.2_x86_64_unknown_linux_gnu".
         assert!(enabled_with(Some("bpfland_1.1.2_x86_64_unknown_linux_gnu")).matches("scx_bpfland"));
+    }
+
+    #[test]
+    fn matches_versioned_ops_suffix_with_prefix() {
+        // flow keeps the scx_ prefix in its versioned ops name.
+        assert!(enabled_with(Some("scx_flow_3.1.1_x86_64_unknown_linux_gnu")).matches("scx_flow"));
+    }
+
+    #[test]
+    fn rejects_full_name_prefix_without_separator() {
+        assert!(!enabled_with(Some("scx_flowmatic_1.0")).matches("scx_flow"));
     }
 
     #[test]
