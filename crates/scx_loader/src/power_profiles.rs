@@ -96,7 +96,10 @@ const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 #[must_use]
 const fn next_retry_delay(delay: Duration) -> Duration {
     let doubled = delay.saturating_mul(2);
-    if doubled.as_secs() > MAX_RETRY_DELAY.as_secs() {
+    if doubled.as_secs() > MAX_RETRY_DELAY.as_secs()
+        || (doubled.as_secs() == MAX_RETRY_DELAY.as_secs()
+            && doubled.subsec_nanos() > MAX_RETRY_DELAY.subsec_nanos())
+    {
         MAX_RETRY_DELAY
     } else {
         doubled
@@ -296,6 +299,14 @@ mod tests {
         );
         assert_eq!(
             next_retry_delay(Duration::from_secs(30)),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn retry_delay_caps_doubled_subsecond_remainder() {
+        assert_eq!(
+            next_retry_delay(Duration::from_secs(15) + Duration::from_nanos(1)),
             Duration::from_secs(30)
         );
     }
