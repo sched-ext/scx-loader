@@ -655,6 +655,8 @@ async fn main() -> Result<()> {
             .await?;
     }
 
+    // Keep the monitor task handle bound in `main` so the runtime aborts the
+    // PPD monitor naturally when `worker_loop` exits and shuts down.
     let _power_profiles_monitor = if config.power_profiles.enabled {
         let monitor_connection = connection.clone();
         let power_profiles_config = config.power_profiles.clone();
