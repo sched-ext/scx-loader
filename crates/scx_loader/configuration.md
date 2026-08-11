@@ -21,6 +21,12 @@ The configuration file has the following structure:
 default_sched = "scx_cosmos"
 default_mode = "Auto"
 
+[power_profiles]
+enabled = true
+power_saver = "PowerSave"
+balanced = "Auto"
+performance = "Gaming"
+
 [scheds.scx_bpfland]
 auto_mode = ["-m", "auto"]
 gaming_mode = ["-m", "all"]
@@ -131,6 +137,16 @@ server_mode = []
 * This field specifies the default scheduler mode that will be used when starting a scheduler without explicitly specifying a mode.
 * Possible values are: `"Auto"`, `"Gaming"`, `"LowLatency"`, `"PowerSave"`, `"Server"`.
 * If this field is not present, it defaults to `"Auto"`.
+
+**`[power_profiles]`:**
+
+* `enabled` controls whether the normal D-Bus daemon follows power-profiles-daemon. It defaults to `false`; `scx_loader --auto` never follows PPD.
+* `power_saver`, `balanced`, and `performance` map PPD's `power-saver`, `balanced`, and `performance` profiles to scx-loader modes. Each mapping is optional and has no built-in default.
+* Mapping values use `"Auto"`, `"Gaming"`, `"PowerSave"`, `"LowLatency"`, or `"Server"`.
+* When enabled, scx-loader applies PPD's current profile at startup and after reconnecting, then reacts to profile changes.
+* A mapped event switches the currently running scheduler to the configured mode, replacing custom scheduler arguments. If no scheduler is running, the event is discarded.
+* Manual scheduler or mode changes remain active until the next mapped PPD event. Unmapped and unknown profiles leave the scheduler unchanged.
+* PPD may be absent or restart without preventing scx-loader from running; the monitor reconnects automatically.
 
 **`[scheds.scx_name]`:**
 
