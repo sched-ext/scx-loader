@@ -21,7 +21,17 @@ use crate::SupportedSched;
 pub struct Config {
     pub default_sched: Option<SupportedSched>,
     pub default_mode: Option<SchedMode>,
+    pub power_profiles: PowerProfilesConfig,
     pub scheds: HashMap<String, Sched>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PowerProfilesConfig {
+    pub enabled: bool,
+    pub power_saver: Option<SchedMode>,
+    pub balanced: Option<SchedMode>,
+    pub performance: Option<SchedMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -115,6 +125,7 @@ pub fn get_default_config() -> Config {
     Config {
         default_sched: None,
         default_mode: Some(SchedMode::Auto),
+        power_profiles: PowerProfilesConfig::default(),
         scheds: scheds_map,
     }
 }
@@ -521,5 +532,88 @@ server_mode = ["--profile", "gaming"]
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn test_power_profiles_config_defaults_to_disabled() {
+        let parsed_config =
+            parse_config_content("default_mode = \"Auto\"").expect("Failed to parse config");
+
+        assert_eq!(parsed_config.power_profiles, PowerProfilesConfig::default());
+    }
+
+    #[test]
+    fn test_partial_power_profiles_config() {
+        let config_str = r#"
+[power_profiles]
+enabled = true
+balanced = "Auto"
+"#;
+        let parsed_config = parse_config_content(config_str).expect("Failed to parse config");
+
+        assert!(parsed_config.power_profiles.enabled);
+        assert_eq!(
+            parsed_config.power_profiles,
+            PowerProfilesConfig {
+                enabled: true,
+                power_saver: None,
+                balanced: Some(SchedMode::Auto),
+                performance: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_complete_power_profiles_config() {
+        let config_str = r#"
+[power_profiles]
+enabled = true
+power_saver = "PowerSave"
+balanced = "Auto"
+performance = "Gaming"
+"#;
+        let parsed_config = parse_config_content(config_str).expect("Failed to parse config");
+
+        assert_eq!(
+            parsed_config.power_profiles,
+            PowerProfilesConfig {
+                enabled: true,
+                power_saver: Some(SchedMode::PowerSave),
+                balanced: Some(SchedMode::Auto),
+                performance: Some(SchedMode::Gaming),
+            }
+        );
+    }
+
+    #[test]
+    fn test_power_profiles_accepts_every_scheduler_mode() {
+        for (mode_name, expected_mode) in [
+            ("Auto", SchedMode::Auto),
+            ("Gaming", SchedMode::Gaming),
+            ("PowerSave", SchedMode::PowerSave),
+            ("LowLatency", SchedMode::LowLatency),
+            ("Server", SchedMode::Server),
+        ] {
+            let config_str = format!(
+                r#"
+[power_profiles]
+balanced = "{mode_name}"
+"#
+            );
+            let parsed_config =
+                parse_config_content(&config_str).expect("mode mapping should parse");
+
+            assert_eq!(parsed_config.power_profiles.balanced, Some(expected_mode));
+        }
+    }
+
+    #[test]
+    fn test_power_profiles_rejects_invalid_scheduler_mode() {
+        let config_str = r#"
+[power_profiles]
+balanced = "auto"
+"#;
+
+        assert!(parse_config_content(config_str).is_err());
     }
 }
