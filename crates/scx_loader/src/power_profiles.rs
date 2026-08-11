@@ -148,6 +148,7 @@ async fn monitor_session(connection: &Connection, config: &PowerProfilesConfig) 
         tokio::select! {
             changed = profile_changes.next() => {
                 let Some(changed) = changed else {
+                    log::warn!("PPD property change stream ended; reconnecting");
                     return Ok(());
                 };
                 let args = match changed.args() {
@@ -293,6 +294,10 @@ mod tests {
 
     #[test]
     fn retry_delay_caps_at_thirty_seconds() {
+        assert_eq!(
+            next_retry_delay(Duration::from_secs(15)),
+            Duration::from_secs(30)
+        );
         assert_eq!(
             next_retry_delay(Duration::from_secs(16)),
             Duration::from_secs(30)
