@@ -10,6 +10,9 @@
 
 mod logger;
 
+#[cfg(test)]
+mod power_profiles;
+
 use scx_loader::dbus::LoaderClientProxy;
 use scx_loader::{config, SchedMode, SupportedSched};
 
