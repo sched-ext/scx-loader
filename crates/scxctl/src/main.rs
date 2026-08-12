@@ -175,6 +175,8 @@ struct LoaderSnapshot {
     scheduler: String,
     mode: SchedMode,
     args: Vec<String>,
+    /// Instance identity from the same `GetAll`; `None` on older daemons.
+    generation: Option<String>,
 }
 
 fn read_loader_snapshot(scx_loader: &LoaderClientProxyBlocking) -> Option<LoaderSnapshot> {
@@ -192,26 +194,65 @@ fn read_loader_snapshot(scx_loader: &LoaderClientProxyBlocking) -> Option<Loader
         scheduler: String::try_from(props.remove("CurrentScheduler")?).ok()?,
         mode: SchedMode::try_from(props.remove("SchedulerMode")?).ok()?,
         args: Vec::<String>::try_from(props.remove("CurrentSchedulerArgs")?).ok()?,
+        generation: props
+            .remove("DaemonGeneration")
+            .and_then(|value| String::try_from(value).ok()),
     })
 }
 
 /// The one line scxctl prints about loader state: plain observation, no
 /// request reference.
-fn loader_observation(snapshot: &LoaderSnapshot) -> String {
+fn loader_observation(snapshot: &LoaderSnapshot, mode_configured: bool) -> String {
     if snapshot.scheduler == "unknown" {
         "the loader now reports no scheduler running".to_owned()
-    } else if snapshot.args.is_empty() {
+    } else if !snapshot.args.is_empty() {
+        format!(
+            "the loader now reports {} with arguments \"{}\"",
+            snapshot.scheduler,
+            format_scheduler_args(&snapshot.args)
+        )
+    } else if mode_configured {
         format!(
             "the loader now reports {} in {:?} mode",
             snapshot.scheduler, snapshot.mode
         )
     } else {
         format!(
-            "the loader now reports {} with arguments \"{}\"",
-            snapshot.scheduler,
-            format_scheduler_args(&snapshot.args)
+            "the loader now reports {} in {:?} mode (no configured arguments; scheduler defaults in effect)",
+            snapshot.scheduler, snapshot.mode
         )
     }
+}
+
+/// Qualifier only when the same instance answered both calls: bus names
+/// are never reused, so an unchanged generation read *after* the
+/// follow-up rules out A→B→A.
+fn same_instance_confirmed(
+    snapshot_generation: Option<&str>,
+    generation_after: Option<&str>,
+) -> bool {
+    matches!((snapshot_generation, generation_after), (Some(a), Some(b)) if a == b)
+}
+
+/// Constant within one instance, but the follow-up can be answered by a
+/// replacement — truth from two instances is never mixed. Unconfirmable
+/// (replacement, read failure, old daemon) fails open and withholds the
+/// qualifier.
+fn observed_mode_configured(
+    scx_loader: &LoaderClientProxyBlocking,
+    snapshot: &LoaderSnapshot,
+) -> bool {
+    if !snapshot.args.is_empty() || snapshot.scheduler == "unknown" {
+        return true;
+    }
+    let Ok(sched) = SupportedSched::try_from(snapshot.scheduler.as_str()) else {
+        return true;
+    };
+    if mode_is_configured(scx_loader, &sched, snapshot.mode) {
+        return true;
+    }
+    let generation_after = scx_loader.daemon_generation().ok();
+    !same_instance_confirmed(snapshot.generation.as_deref(), generation_after.as_deref())
 }
 
 /// One line claims acceptance, one claims observation, never tied
@@ -224,11 +265,12 @@ fn report_operation_outcome(
     sched: &SupportedSched,
     requested: SchedMode,
 ) {
-    println!(
-        "{action_request} request for {sched:?} accepted (requested {requested:?} mode)"
-    );
+    println!("{action_request} request for {sched:?} accepted (requested {requested:?} mode)");
     match read_loader_snapshot(scx_loader) {
-        Some(snapshot) => println!("{}", loader_observation(&snapshot)),
+        Some(snapshot) => {
+            let mode_configured = observed_mode_configured(scx_loader, &snapshot);
+            println!("{}", loader_observation(&snapshot, mode_configured));
+        }
         None => eprintln!(
             "{} current loader state could not be read",
             "warning:".yellow().bold()
@@ -730,13 +772,31 @@ mod tests {
             scheduler: scheduler.to_owned(),
             mode,
             args: args.iter().map(|s| (*s).to_owned()).collect(),
+            generation: None,
         }
+    }
+
+    #[test]
+    fn custom_args_win_over_the_mode_qualifier() {
+        assert_eq!(
+            loader_observation(&snapshot("scx_lavd", SchedMode::Gaming, &["--foo"]), false),
+            "the loader now reports scx_lavd with arguments \"--foo\""
+        );
+    }
+
+    #[test]
+    fn qualifier_requires_the_same_generation_on_both_sides() {
+        assert!(same_instance_confirmed(Some(":1.42"), Some(":1.42")));
+        assert!(!same_instance_confirmed(Some(":1.42"), Some(":1.97")));
+        assert!(!same_instance_confirmed(None, Some(":1.42")));
+        assert!(!same_instance_confirmed(Some(":1.42"), None));
+        assert!(!same_instance_confirmed(None, None));
     }
 
     #[test]
     fn observation_for_no_scheduler_running() {
         assert_eq!(
-            loader_observation(&snapshot("unknown", SchedMode::Auto, &[])),
+            loader_observation(&snapshot("unknown", SchedMode::Auto, &[]), true),
             "the loader now reports no scheduler running"
         );
     }
@@ -744,15 +804,26 @@ mod tests {
     #[test]
     fn observation_for_a_mode_based_scheduler() {
         assert_eq!(
-            loader_observation(&snapshot("scx_lavd", SchedMode::LowLatency, &[])),
+            loader_observation(&snapshot("scx_lavd", SchedMode::LowLatency, &[]), true),
             "the loader now reports scx_lavd in LowLatency mode"
+        );
+    }
+
+    #[test]
+    fn observation_for_an_unconfigured_mode_carries_the_defaults_qualifier() {
+        assert_eq!(
+            loader_observation(&snapshot("scx_flash", SchedMode::Gaming, &[]), false),
+            "the loader now reports scx_flash in Gaming mode (no configured arguments; scheduler defaults in effect)"
         );
     }
 
     #[test]
     fn observation_for_a_scheduler_with_custom_arguments() {
         assert_eq!(
-            loader_observation(&snapshot("scx_lavd", SchedMode::Auto, &["--performance"])),
+            loader_observation(
+                &snapshot("scx_lavd", SchedMode::Auto, &["--performance"]),
+                true
+            ),
             "the loader now reports scx_lavd with arguments \"--performance\""
         );
     }
