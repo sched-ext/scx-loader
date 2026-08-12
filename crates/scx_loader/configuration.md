@@ -159,7 +159,8 @@ server_mode = []
 * Mapping values use `"Auto"`, `"Gaming"`, `"PowerSave"`, `"LowLatency"`, or `"Server"`.
 * When enabled, scx-loader applies PPD's current profile at startup and after reconnecting, then reacts to profile changes.
 * A mapped event switches the currently running scheduler to the configured mode, replacing custom scheduler arguments. If no scheduler is running, the event is discarded.
-* Manual scheduler or mode changes remain active until the next mapped PPD event. Unmapped and unknown profiles leave the scheduler unchanged.
+* When a scheduler is started (or switched to) while none is running, the active profile's mapping overrides the requested mode, so the mapping holds regardless of whether PPD or the scheduler came up first. Starts with custom scheduler arguments and `RestoreDefault` (an explicit request for the configured default) are exempt.
+* Mode changes on an already-running scheduler remain active until the next mapped PPD event. Unmapped and unknown profiles leave the scheduler unchanged.
 * PPD may be absent or restart without preventing scx-loader from running; the monitor reconnects automatically.
 
 **`[scheds.scx_name]`:**

@@ -137,6 +137,9 @@ struct ScxLoader {
     // Full config, kept around so clients can query which modes are actually
     // configured for a given scheduler (see `scheduler_modes`).
     config: config::Config,
+    // Mode mapped from PPD's active profile (see
+    // `power_profiles::mode_for_start`).
+    ppd_mapping: power_profiles::ActiveMapping,
 }
 
 #[derive(Parser, Debug)]
@@ -267,16 +270,27 @@ impl ScxLoader {
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
-        log::info!("starting {scx_name:?} with mode {sched_mode:?}..");
+
+        let effective_mode = power_profiles::mode_for_start(
+            self.state.scx.is_none(),
+            self.ppd_mapping.get(),
+            sched_mode,
+        );
+        if effective_mode != sched_mode {
+            log::info!(
+                "active PPD profile maps to {effective_mode:?}; overriding requested mode {sched_mode:?}"
+            );
+        }
+        log::info!("starting {scx_name:?} with mode {effective_mode:?}..");
 
         let _ = self
             .channel
-            .send(ScxMessage::StartSched((scx_name.clone(), sched_mode)));
+            .send(ScxMessage::StartSched((scx_name.clone(), effective_mode)));
         self.apply_and_signal(
             &emitter,
             SchedState {
                 scx: Some(scx_name),
-                mode: sched_mode,
+                mode: effective_mode,
                 args: None,
             },
         )
@@ -323,16 +337,29 @@ impl ScxLoader {
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
-        log::info!("switching {scx_name:?} with mode {sched_mode:?}..");
+
+        // A switch while nothing runs is a start in disguise; on a running
+        // scheduler it is an explicit user decision — passed through.
+        let effective_mode = power_profiles::mode_for_start(
+            self.state.scx.is_none(),
+            self.ppd_mapping.get(),
+            sched_mode,
+        );
+        if effective_mode != sched_mode {
+            log::info!(
+                "active PPD profile maps to {effective_mode:?}; overriding requested mode {sched_mode:?}"
+            );
+        }
+        log::info!("switching {scx_name:?} with mode {effective_mode:?}..");
 
         let _ = self
             .channel
-            .send(ScxMessage::SwitchSched((scx_name.clone(), sched_mode)));
+            .send(ScxMessage::SwitchSched((scx_name.clone(), effective_mode)));
         self.apply_and_signal(
             &emitter,
             SchedState {
                 scx: Some(scx_name),
-                mode: sched_mode,
+                mode: effective_mode,
                 args: None,
             },
         )
@@ -607,6 +634,7 @@ async fn main() -> Result<()> {
         .unique_name()
         .context("system bus connection has no unique name")?
         .to_string();
+    let ppd_mapping = power_profiles::ActiveMapping::default();
     connection
         .object_server()
         .at(
@@ -622,6 +650,7 @@ async fn main() -> Result<()> {
                 default_sched: config.default_sched.clone(),
                 default_mode: config.default_mode.unwrap_or(SchedMode::Auto),
                 config: config.clone(),
+                ppd_mapping: ppd_mapping.clone(),
             },
         )
         .await?;
@@ -646,6 +675,13 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Seed the mapping before the default scheduler starts, so boot lands
+    // in the mapped mode. Best effort.
+    if config.power_profiles.enabled {
+        power_profiles::seed_active_mapping(&connection, &config.power_profiles, &ppd_mapping)
+            .await;
+    }
+
     // if user set default scheduler, then start it
     if let Some(default_sched) = &config.default_sched {
         log::info!("Starting default scheduler: {default_sched:?}");
@@ -664,8 +700,11 @@ async fn main() -> Result<()> {
         let monitor_connection = connection.clone();
         let power_profiles_config = config.power_profiles.clone();
 
+        let monitor_mapping = ppd_mapping.clone();
+
         Some(tokio::spawn(async move {
-            power_profiles::monitor(monitor_connection, power_profiles_config).await;
+            power_profiles::monitor(monitor_connection, power_profiles_config, monitor_mapping)
+                .await;
         }))
     } else {
         None
