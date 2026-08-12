@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -80,6 +81,62 @@ fn resolve_mode(config: &PowerProfilesConfig, profile: &str) -> Option<SchedMode
     }
 }
 
+/// Mapped mode shared between the monitor (writer) and D-Bus (reader);
+/// `None` = no enforcement.
+#[derive(Clone, Default)]
+pub(crate) struct ActiveMapping(Arc<RwLock<Option<SchedMode>>>);
+
+impl ActiveMapping {
+    #[must_use]
+    pub(crate) fn get(&self) -> Option<SchedMode> {
+        *self.0.read().expect("active mapping lock poisoned")
+    }
+
+    fn set(&self, mode: Option<SchedMode>) {
+        *self.0.write().expect("active mapping lock poisoned") = mode;
+    }
+}
+
+/// When a scheduler is about to *appear*, an active PPD mapping wins;
+/// otherwise the requested mode wins. Decided synchronously in the
+/// handler that flips `current_scx` — the only place the appearance
+/// transition is known natively.
+#[must_use]
+pub(crate) fn mode_for_start(
+    starting_from_idle: bool,
+    active_mapping: Option<SchedMode>,
+    requested: SchedMode,
+) -> SchedMode {
+    match active_mapping {
+        Some(mapped) if starting_from_idle => mapped,
+        _ => requested,
+    }
+}
+
+/// One-shot seed of the active profile's mapping before the default
+/// scheduler starts; failure leaves enforcement off.
+pub(crate) async fn seed_active_mapping(
+    connection: &Connection,
+    config: &PowerProfilesConfig,
+    mapping: &ActiveMapping,
+) {
+    let power_profiles = match PowerProfilesProxy::builder(connection)
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await
+    {
+        Ok(proxy) => proxy,
+        Err(error) => {
+            log::debug!("PPD proxy unavailable at startup: {error}");
+            return;
+        }
+    };
+    match power_profiles.active_profile().await {
+        Ok(profile) => mapping.set(resolve_mode(config, &profile)),
+        Err(error) => log::debug!("Failed to read PPD's active profile at startup: {error}"),
+    }
+}
+
 #[must_use]
 fn should_apply(
     current_scheduler: &str,
@@ -106,7 +163,11 @@ const fn next_retry_delay(delay: Duration) -> Duration {
     }
 }
 
-async fn monitor_session(connection: &Connection, config: &PowerProfilesConfig) -> Result<()> {
+async fn monitor_session(
+    connection: &Connection,
+    config: &PowerProfilesConfig,
+    mapping: &ActiveMapping,
+) -> Result<()> {
     let power_profiles = PowerProfilesProxy::builder(connection)
         .cache_properties(CacheProperties::No)
         .build()
@@ -140,6 +201,7 @@ async fn monitor_session(connection: &Connection, config: &PowerProfilesConfig) 
         .active_profile()
         .await
         .context("Failed to read PPD's active profile")?;
+    mapping.set(resolve_mode(config, &active_profile));
     if let Err(error) = apply_profile(&loader, config, &active_profile).await {
         log::warn!("Failed to process PPD profile {active_profile:?}: {error:#}");
     }
@@ -169,6 +231,7 @@ async fn monitor_session(connection: &Connection, config: &PowerProfilesConfig) 
 
                 match power_profiles.active_profile().await {
                     Ok(profile) => {
+                        mapping.set(resolve_mode(config, &profile));
                         if let Err(error) = apply_profile(&loader, config, &profile).await {
                             log::warn!("Failed to process PPD profile {profile:?}: {error:#}");
                         }
@@ -181,11 +244,19 @@ async fn monitor_session(connection: &Connection, config: &PowerProfilesConfig) 
     }
 }
 
-pub(crate) async fn monitor(connection: Connection, config: PowerProfilesConfig) {
+pub(crate) async fn monitor(
+    connection: Connection,
+    config: PowerProfilesConfig,
+    mapping: ActiveMapping,
+) {
     let mut retry_delay = INITIAL_RETRY_DELAY;
 
     loop {
-        match monitor_session(&connection, &config).await {
+        let outcome = monitor_session(&connection, &config, &mapping).await;
+        // No session — PPD state unknown; enforcing a stale mapping would be a
+        // guess.
+        mapping.set(None);
+        match outcome {
             Ok(()) => {
                 retry_delay = INITIAL_RETRY_DELAY;
                 log::warn!("PPD connection changed; reconnecting");
@@ -282,6 +353,40 @@ mod tests {
             &[],
             SchedMode::PowerSave
         ));
+    }
+
+    #[test]
+    fn mapping_overrides_requested_mode_only_on_appearance() {
+        assert_eq!(
+            mode_for_start(true, Some(SchedMode::Gaming), SchedMode::Auto),
+            SchedMode::Gaming
+        );
+        assert_eq!(
+            mode_for_start(false, Some(SchedMode::Gaming), SchedMode::Auto),
+            SchedMode::Auto
+        );
+    }
+
+    #[test]
+    fn absent_mapping_never_overrides() {
+        assert_eq!(
+            mode_for_start(true, None, SchedMode::LowLatency),
+            SchedMode::LowLatency
+        );
+        assert_eq!(
+            mode_for_start(false, None, SchedMode::LowLatency),
+            SchedMode::LowLatency
+        );
+    }
+
+    #[test]
+    fn active_mapping_starts_empty_and_round_trips() {
+        let mapping = ActiveMapping::default();
+        assert_eq!(mapping.get(), None);
+        mapping.set(Some(SchedMode::PowerSave));
+        assert_eq!(mapping.get(), Some(SchedMode::PowerSave));
+        mapping.set(None);
+        assert_eq!(mapping.get(), None);
     }
 
     #[test]

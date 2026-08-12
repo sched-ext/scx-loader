@@ -14,7 +14,10 @@ use crate::SupportedSched;
     default_path = "/org/scx/Loader"
 )]
 pub trait LoaderClient {
-    /// Starts the specified scheduler with the given mode.
+    ///
+    /// A successful reply confirms acceptance, not verbatim application:
+    /// with power-profiles enforcement and no scheduler running, the loader
+    /// may substitute the mode mapped from the active PPD profile.
     fn start_scheduler(&self, scx_name: SupportedSched, sched_mode: SchedMode) -> zbus::Result<()>;
 
     /// Starts the specified scheduler with the provided arguments.
@@ -27,9 +30,10 @@ pub trait LoaderClient {
     /// Stops the currently running scheduler.
     fn stop_scheduler(&self) -> zbus::Result<()>;
 
-    /// Method for switching to the specified scheduler with the given mode.
-    /// This method will stop the currently running scheduler (if any) and
-    /// then start the new scheduler.
+    ///
+    /// A successful reply confirms acceptance, not verbatim application:
+    /// with enforcement and no scheduler running (a switch from idle is a
+    /// start), the loader may substitute the mapped mode.
     fn switch_scheduler(&self, scx_name: SupportedSched, sched_mode: SchedMode)
         -> zbus::Result<()>;
 
