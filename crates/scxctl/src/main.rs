@@ -6,6 +6,7 @@ use colored::Colorize;
 use scx_loader::{dbus::LoaderClientProxyBlocking, SchedMode, SupportedSched};
 use std::process::exit;
 use zbus::blocking::Connection;
+use zbus::names::InterfaceName;
 
 fn cmd_get(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::error::Error>> {
     let current_scheduler: String = scx_loader.current_scheduler()?;
@@ -146,7 +147,7 @@ fn cmd_start(
     } else {
         let mode_configured = check_mode_configured(scx_loader, &sched, mode);
         scx_loader.start_scheduler(sched.clone(), mode)?;
-        report_mode_result("started", &sched, mode, mode_configured);
+        report_effective_mode(scx_loader, "started", "start", &sched, mode, mode_configured);
     }
     Ok(())
 }
@@ -164,6 +165,119 @@ fn report_mode_result(
         println!("{action} {sched:?} in {mode:?} mode");
     } else {
         println!("{action} {sched:?} with its own defaults");
+    }
+}
+
+/// Loader state from a single `GetAll`, so the three values describe
+/// one moment.
+#[derive(Debug, PartialEq)]
+struct LoaderSnapshot {
+    scheduler: String,
+    mode: SchedMode,
+    args: Vec<String>,
+}
+
+fn read_loader_snapshot(scx_loader: &LoaderClientProxyBlocking) -> Option<LoaderSnapshot> {
+    let properties = zbus::blocking::fdo::PropertiesProxy::builder(scx_loader.inner().connection())
+        .destination("org.scx.Loader")
+        .ok()?
+        .path("/org/scx/Loader")
+        .ok()?
+        .build()
+        .ok()?;
+    let mut props = properties
+        .get_all(InterfaceName::try_from("org.scx.Loader").ok()?)
+        .ok()?;
+    Some(LoaderSnapshot {
+        scheduler: String::try_from(props.remove("CurrentScheduler")?).ok()?,
+        mode: SchedMode::try_from(props.remove("SchedulerMode")?).ok()?,
+        args: Vec::<String>::try_from(props.remove("CurrentSchedulerArgs")?).ok()?,
+    })
+}
+
+/// What the snapshot allows scxctl to say: the reply only confirms
+/// acceptance, the snapshot is a later observation — report state,
+/// never causality.
+#[derive(Debug, PartialEq)]
+enum Readback {
+    /// The loader reports the requested scheduler in the requested mode.
+    Confirmed,
+    /// Same scheduler, no custom args, but a different mode is in effect.
+    ModeDiffers(SchedMode),
+    /// The loader reports a different scheduler, custom args, or nothing
+    /// running: the state has moved past this request.
+    StateMovedOn(LoaderSnapshot),
+    /// The snapshot could not be taken.
+    Unavailable,
+}
+
+fn classify_readback(
+    requested_sched: &SupportedSched,
+    requested_mode: SchedMode,
+    snapshot: Option<LoaderSnapshot>,
+) -> Readback {
+    let Some(snapshot) = snapshot else {
+        return Readback::Unavailable;
+    };
+    let requested_name: &str = requested_sched.clone().into();
+    if snapshot.scheduler != requested_name || !snapshot.args.is_empty() {
+        return Readback::StateMovedOn(snapshot);
+    }
+    if snapshot.mode == requested_mode {
+        Readback::Confirmed
+    } else {
+        Readback::ModeDiffers(snapshot.mode)
+    }
+}
+
+/// Plain observation line; used when the snapshot is not the request's
+/// outcome.
+fn print_loader_observation(snapshot: &LoaderSnapshot) {
+    if snapshot.scheduler == "unknown" {
+        println!("the loader now reports no scheduler running");
+    } else if snapshot.args.is_empty() {
+        println!(
+            "the loader now reports {} in {:?} mode",
+            snapshot.scheduler, snapshot.mode
+        );
+    } else {
+        println!(
+            "the loader now reports {} with arguments \"{}\"",
+            snapshot.scheduler,
+            format_scheduler_args(&snapshot.args)
+        );
+    }
+}
+
+/// Request line claims only acceptance, snapshot line only observation;
+/// only `Confirmed` keeps the combined success message.
+fn report_effective_mode(
+    scx_loader: &LoaderClientProxyBlocking,
+    action_past: &str,
+    action_request: &str,
+    sched: &SupportedSched,
+    requested: SchedMode,
+    requested_configured: bool,
+) {
+    match classify_readback(sched, requested, read_loader_snapshot(scx_loader)) {
+        Readback::Confirmed => {
+            report_mode_result(action_past, sched, requested, requested_configured);
+        }
+        Readback::ModeDiffers(effective) => {
+            println!("{action_request} request for {sched:?} accepted");
+            println!("the loader now reports {sched:?} in {effective:?} mode");
+        }
+        Readback::StateMovedOn(snapshot) => {
+            println!("{action_request} request for {sched:?} accepted");
+            print_loader_observation(&snapshot);
+        }
+        Readback::Unavailable => {
+            println!("{action_request} request for {sched:?} accepted (requested {requested:?} mode)");
+            eprintln!(
+                "{} current loader state could not be read",
+                "warning:".yellow().bold()
+            );
+        }
     }
 }
 
@@ -231,7 +345,7 @@ fn cmd_switch(
     } else {
         let mode_configured = check_mode_configured(scx_loader, &sched, mode);
         scx_loader.switch_scheduler(sched.clone(), mode)?;
-        report_mode_result("switched to", &sched, mode, mode_configured);
+        report_effective_mode(scx_loader, "switched to", "switch", &sched, mode, mode_configured);
     }
     Ok(())
 }
@@ -654,6 +768,85 @@ mod tests {
         let formatted = format_scheduler_args(&args);
 
         assert_eq!(shell_words::split(&formatted), Ok(args));
+    }
+
+    fn snapshot(scheduler: &str, mode: SchedMode, args: &[&str]) -> LoaderSnapshot {
+        LoaderSnapshot {
+            scheduler: scheduler.to_owned(),
+            mode,
+            args: args.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn matching_snapshot_confirms_the_request() {
+        assert_eq!(
+            classify_readback(
+                &SupportedSched::Lavd,
+                SchedMode::LowLatency,
+                Some(snapshot("scx_lavd", SchedMode::LowLatency, &[]))
+            ),
+            Readback::Confirmed
+        );
+    }
+
+    #[test]
+    fn same_scheduler_different_mode_is_a_mode_difference() {
+        assert_eq!(
+            classify_readback(
+                &SupportedSched::Lavd,
+                SchedMode::LowLatency,
+                Some(snapshot("scx_lavd", SchedMode::PowerSave, &[]))
+            ),
+            Readback::ModeDiffers(SchedMode::PowerSave)
+        );
+    }
+
+    #[test]
+    fn different_scheduler_means_the_state_moved_on() {
+        let observed = snapshot("scx_flash", SchedMode::Gaming, &[]);
+        assert_eq!(
+            classify_readback(
+                &SupportedSched::Lavd,
+                SchedMode::LowLatency,
+                Some(snapshot("scx_flash", SchedMode::Gaming, &[]))
+            ),
+            Readback::StateMovedOn(observed)
+        );
+    }
+
+    #[test]
+    fn custom_args_mean_the_state_moved_on_even_for_the_same_scheduler() {
+        let observed = snapshot("scx_lavd", SchedMode::Auto, &["--performance"]);
+        assert_eq!(
+            classify_readback(
+                &SupportedSched::Lavd,
+                SchedMode::Auto,
+                Some(snapshot("scx_lavd", SchedMode::Auto, &["--performance"]))
+            ),
+            Readback::StateMovedOn(observed)
+        );
+    }
+
+    #[test]
+    fn stopped_scheduler_means_the_state_moved_on() {
+        let observed = snapshot("unknown", SchedMode::Auto, &[]);
+        assert_eq!(
+            classify_readback(
+                &SupportedSched::Lavd,
+                SchedMode::LowLatency,
+                Some(snapshot("unknown", SchedMode::Auto, &[]))
+            ),
+            Readback::StateMovedOn(observed)
+        );
+    }
+
+    #[test]
+    fn missing_snapshot_is_unavailable() {
+        assert_eq!(
+            classify_readback(&SupportedSched::Lavd, SchedMode::Gaming, None),
+            Readback::Unavailable
+        );
     }
 
     #[test]
