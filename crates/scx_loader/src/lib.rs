@@ -46,6 +46,8 @@ pub enum SupportedSched {
     Flow,
     #[serde(rename = "scx_forge")]
     Forge,
+    #[serde(rename = "scx_mlfq")]
+    MLFQ,
 }
 
 impl FromStr for SupportedSched {
@@ -61,6 +63,7 @@ impl FromStr for SupportedSched {
             "scx_flow" => Ok(SupportedSched::Flow),
             "scx_forge" => Ok(SupportedSched::Forge),
             "scx_lavd" => Ok(SupportedSched::Lavd),
+            "scx_mlfq" => Ok(SupportedSched::MLFQ),
             "scx_pandemonium" => Ok(SupportedSched::Pandemonium),
             "scx_p2dq" => Ok(SupportedSched::P2DQ),
             "scx_tickless" => Ok(SupportedSched::Tickless),
@@ -89,6 +92,7 @@ impl From<SupportedSched> for &str {
             SupportedSched::Flow => "scx_flow",
             SupportedSched::Forge => "scx_forge",
             SupportedSched::Lavd => "scx_lavd",
+            SupportedSched::MLFQ => "scx_mlfq",
             SupportedSched::Pandemonium => "scx_pandemonium",
             SupportedSched::P2DQ => "scx_p2dq",
             SupportedSched::Tickless => "scx_tickless",
