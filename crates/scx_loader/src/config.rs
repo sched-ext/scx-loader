@@ -247,12 +247,6 @@ fn get_default_scx_flags_for_mode(
             SchedMode::PowerSave => vec!["-m", "powersave"],
             SchedMode::Server | SchedMode::Auto => vec![],
         },
-        SupportedSched::Cake => match sched_mode {
-            SchedMode::Gaming | SchedMode::Server => vec!["--profile", "gaming"],
-            SchedMode::LowLatency => vec!["--profile", "esports"],
-            SchedMode::PowerSave => vec!["--profile", "battery"],
-            SchedMode::Auto => vec!["--profile", "default"],
-        },
         // The below Schedulers haven't defined any modes
         SupportedSched::Rusty
         | SupportedSched::Rustland
@@ -260,7 +254,8 @@ fn get_default_scx_flags_for_mode(
         | SupportedSched::Pandemonium
         | SupportedSched::Flash
         | SupportedSched::Flow
-        | SupportedSched::Forge => vec![],
+        | SupportedSched::Forge
+        | SupportedSched::Cake => vec![],
     }
 }
 
