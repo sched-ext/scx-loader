@@ -13,6 +13,8 @@ mod logger;
 use scx_loader::dbus::LoaderClientProxy;
 use scx_loader::{config, SchedMode, SupportedSched};
 
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::process::ExitStatus;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -29,6 +31,9 @@ use tokio::time::Duration;
 use tokio::time::Instant;
 use zbus::interface;
 use zbus::message::Header;
+use zbus::names::InterfaceName;
+use zbus::object_server::SignalEmitter;
+use zbus::zvariant::Value;
 use zbus::Connection;
 use zbus_polkit::policykit1::{AuthorityProxy, CheckAuthorizationFlags, Subject};
 
@@ -62,10 +67,68 @@ enum RunnerMessage {
     Restart((SupportedSched, Vec<String>)),
 }
 
+/// The three mutable properties of `org.scx.Loader` as one value.
+#[derive(Debug, Clone, PartialEq)]
+struct SchedState {
+    /// Currently running scheduler, `None` when nothing runs.
+    scx: Option<SupportedSched>,
+    /// Only meaningful while `args` is `None`.
+    mode: SchedMode,
+    /// Custom arguments the scheduler was started with, if any.
+    args: Option<Vec<String>>,
+}
+
+/// Which properties a transition touched ([`SchedState::diff`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ChangedProps {
+    scheduler: bool,
+    mode: bool,
+    args: bool,
+}
+
+impl ChangedProps {
+    #[cfg(test)]
+    const NONE: ChangedProps = ChangedProps {
+        scheduler: false,
+        mode: false,
+        args: false,
+    };
+}
+
+impl SchedState {
+    /// Getter representation, diff order — the single source for signal
+    /// dictionaries.
+    fn property_values(&self) -> [(&'static str, Value<'static>); 3] {
+        let scheduler: &str = match &self.scx {
+            Some(scx) => scx.clone().into(),
+            None => "unknown",
+        };
+        [
+            ("CurrentScheduler", Value::from(scheduler.to_owned())),
+            ("SchedulerMode", Value::from(self.mode)),
+            (
+                "CurrentSchedulerArgs",
+                Value::from(self.args.clone().unwrap_or_default()),
+            ),
+        ]
+    }
+
+    fn diff(&self, new: &SchedState) -> ChangedProps {
+        ChangedProps {
+            scheduler: self.scx != new.scx,
+            mode: self.mode != new.mode,
+            // `None` and empty `Some` both read as an empty array — not a change.
+            args: self.args.as_deref().unwrap_or_default()
+                != new.args.as_deref().unwrap_or_default(),
+        }
+    }
+}
+
 struct ScxLoader {
-    current_scx: Option<SupportedSched>,
-    current_mode: SchedMode,
-    current_args: Option<Vec<String>>,
+    state: SchedState,
+    /// Unique per instance (the connection's bus name); only its *change*
+    /// is meaningful.
+    generation: String,
     channel: UnboundedSender<ScxMessage>,
     // Store default configuration from config file
     default_sched: Option<SupportedSched>,
@@ -89,7 +152,7 @@ impl ScxLoader {
     /// Get currently running scheduler, in case non is running return "unknown"
     #[zbus(property)]
     fn current_scheduler(&self) -> String {
-        if let Some(current_scx) = &self.current_scx {
+        if let Some(current_scx) = &self.state.scx {
             let current_scx: &str = current_scx.clone().into();
             log::debug!("called {current_scx:?}");
             current_scx.into()
@@ -98,20 +161,29 @@ impl ScxLoader {
         }
     }
 
-    /// Get scheduler mode
+    /// Get scheduler mode; `Auto` whenever no scheduler is active
     #[zbus(property)]
     fn scheduler_mode(&self) -> SchedMode {
-        self.current_mode
+        self.state.mode
     }
 
     /// Get arguments used for currently running scheduler
     #[zbus(property)]
     fn current_scheduler_args(&self) -> Vec<String> {
-        self.current_args.clone().unwrap_or_default()
+        self.state.args.clone().unwrap_or_default()
+    }
+
+    /// Changes exactly on instance replacement. Deliberately not "const":
+    /// subscribers do see it change, and the startup announcement is that
+    /// change signal.
+    #[zbus(property)]
+    fn daemon_generation(&self) -> String {
+        self.generation.clone()
     }
 
     /// Get list of supported schedulers
-    #[zbus(property)]
+    // Const for the daemon's lifetime; mirrors the shipped XML.
+    #[zbus(property(emits_changed_signal = "const"))]
     fn supported_schedulers(&self) -> Vec<&'static str> {
         vec![
             "scx_beerland",
@@ -132,7 +204,8 @@ impl ScxLoader {
     }
 
     /// Get the default scheduler configured in config file, returns "unknown" if not set
-    #[zbus(property)]
+    // Config is read once at startup; "const" as in the shipped XML.
+    #[zbus(property(emits_changed_signal = "const"))]
     fn default_scheduler(&self) -> String {
         if let Some(default_scx) = &self.default_sched {
             let default_scx: &str = default_scx.clone().into();
@@ -143,7 +216,8 @@ impl ScxLoader {
     }
 
     /// Get the default scheduler mode configured in config file
-    #[zbus(property)]
+    // Config is read once at startup; "const" as in the shipped XML.
+    #[zbus(property(emits_changed_signal = "const"))]
     fn default_mode(&self) -> SchedMode {
         self.default_mode
     }
@@ -185,6 +259,7 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         scx_name: SupportedSched,
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
@@ -194,9 +269,15 @@ impl ScxLoader {
         let _ = self
             .channel
             .send(ScxMessage::StartSched((scx_name.clone(), sched_mode)));
-        self.current_scx = Some(scx_name);
-        self.current_mode = sched_mode;
-        self.current_args = None;
+        self.apply_and_signal(
+            &emitter,
+            SchedState {
+                scx: Some(scx_name),
+                mode: sched_mode,
+                args: None,
+            },
+        )
+        .await;
 
         Ok(())
     }
@@ -205,6 +286,7 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         scx_name: SupportedSched,
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
@@ -215,10 +297,16 @@ impl ScxLoader {
             scx_name.clone(),
             scx_args.clone(),
         )));
-        self.current_scx = Some(scx_name);
-        // reset mode to auto
-        self.current_mode = SchedMode::Auto;
-        self.current_args = Some(scx_args);
+        self.apply_and_signal(
+            &emitter,
+            SchedState {
+                scx: Some(scx_name),
+                // custom arguments carry no mode; reset to auto
+                mode: SchedMode::Auto,
+                args: Some(scx_args),
+            },
+        )
+        .await;
 
         Ok(())
     }
@@ -227,6 +315,7 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         scx_name: SupportedSched,
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
@@ -236,9 +325,15 @@ impl ScxLoader {
         let _ = self
             .channel
             .send(ScxMessage::SwitchSched((scx_name.clone(), sched_mode)));
-        self.current_scx = Some(scx_name);
-        self.current_mode = sched_mode;
-        self.current_args = None;
+        self.apply_and_signal(
+            &emitter,
+            SchedState {
+                scx: Some(scx_name),
+                mode: sched_mode,
+                args: None,
+            },
+        )
+        .await;
 
         Ok(())
     }
@@ -247,6 +342,7 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         scx_name: SupportedSched,
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
@@ -257,10 +353,16 @@ impl ScxLoader {
             scx_name.clone(),
             scx_args.clone(),
         )));
-        self.current_scx = Some(scx_name);
-        // reset mode to auto
-        self.current_mode = SchedMode::Auto;
-        self.current_args = Some(scx_args);
+        self.apply_and_signal(
+            &emitter,
+            SchedState {
+                scx: Some(scx_name),
+                // custom arguments carry no mode; reset to auto
+                mode: SchedMode::Auto,
+                args: Some(scx_args),
+            },
+        )
+        .await;
 
         Ok(())
     }
@@ -269,15 +371,24 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
-        if let Some(current_scx) = &self.current_scx {
-            let scx_name: &str = current_scx.clone().into();
+        if let Some(current_scx) = self.state.scx.clone() {
+            let scx_name: &str = current_scx.into();
 
             log::info!("stopping {scx_name:?}..");
             let _ = self.channel.send(ScxMessage::StopSched);
-            self.current_scx = None;
-            self.current_args = None;
+            self.apply_and_signal(
+                &emitter,
+                SchedState {
+                    scx: None,
+                    // Documented contract: Auto when no scheduler is active.
+                    mode: SchedMode::Auto,
+                    args: None,
+                },
+            )
+            .await;
         }
 
         Ok(())
@@ -289,14 +400,14 @@ impl ScxLoader {
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
-        if let Some(current_scx) = &self.current_scx {
+        if let Some(current_scx) = &self.state.scx {
             let scx_name: &str = current_scx.clone().into();
 
             log::info!("restarting {scx_name:?}..");
             let _ = self.channel.send(ScxMessage::RestartSched((
                 current_scx.clone(),
-                self.current_args.clone(),
-                self.current_mode,
+                self.state.args.clone(),
+                self.state.mode,
             )));
 
             Ok(())
@@ -312,10 +423,11 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
 
-        if let Some(default_scx) = &self.default_sched {
+        if let Some(default_scx) = self.default_sched.clone() {
             let scx_name: &str = default_scx.clone().into();
             log::info!(
                 "restoring default scheduler {scx_name:?} with mode {:?}..",
@@ -326,9 +438,16 @@ impl ScxLoader {
                 default_scx.clone(),
                 self.default_mode,
             )));
-            self.current_scx = Some(default_scx.clone());
-            self.current_mode = self.default_mode;
-            self.current_args = None;
+            let mode = self.default_mode;
+            self.apply_and_signal(
+                &emitter,
+                SchedState {
+                    scx: Some(default_scx),
+                    mode,
+                    args: None,
+                },
+            )
+            .await;
 
             Ok(())
         } else {
@@ -337,6 +456,48 @@ impl ScxLoader {
             ))
         }
     }
+}
+
+/// Helpers off the D-Bus surface. Deliberately a separate `impl` block:
+/// anything inside `#[interface]` becomes a D-Bus member.
+impl ScxLoader {
+    /// Assigns `new` and emits one `PropertiesChanged` with exactly the
+    /// changed properties. Best-effort: a failed signal must not fail the
+    /// method.
+    async fn apply_and_signal(&mut self, emitter: &SignalEmitter<'_>, new: SchedState) {
+        let changed = self.state.diff(&new);
+        self.state = new;
+
+        let flags = [changed.scheduler, changed.mode, changed.args];
+        let properties: HashMap<_, _> = self
+            .state
+            .property_values()
+            .into_iter()
+            .zip(flags)
+            .filter_map(|(entry, changed)| changed.then_some(entry))
+            .collect();
+        if properties.is_empty() {
+            return;
+        }
+
+        if let Err(err) = emit_properties_changed(emitter, properties).await {
+            log::warn!("failed to emit PropertiesChanged for scheduler state: {err}");
+        }
+    }
+}
+
+async fn emit_properties_changed(
+    emitter: &SignalEmitter<'_>,
+    properties: HashMap<&str, Value<'_>>,
+) -> zbus::Result<()> {
+    zbus::fdo::Properties::properties_changed(
+        emitter,
+        // Known-good literal; the unchecked const constructor cannot panic.
+        InterfaceName::from_static_str_unchecked("org.scx.Loader"),
+        properties,
+        Cow::Borrowed(&[] as &[&str]),
+    )
+    .await
 }
 
 // Monitors CPU utilization and enables scx_lavd when utilization of any CPUs is > 90%
@@ -438,14 +599,22 @@ async fn main() -> Result<()> {
 
     // register dbus interface
     let connection = Connection::system().await?;
+    // The unique bus name is the instance identity.
+    let generation = connection
+        .unique_name()
+        .context("system bus connection has no unique name")?
+        .to_string();
     connection
         .object_server()
         .at(
             "/org/scx/Loader",
             ScxLoader {
-                current_scx: None,
-                current_mode: SchedMode::Auto,
-                current_args: None,
+                state: SchedState {
+                    scx: None,
+                    mode: SchedMode::Auto,
+                    args: None,
+                },
+                generation,
                 channel: channel.clone(),
                 default_sched: config.default_sched.clone(),
                 default_mode: config.default_mode.unwrap_or(SchedMode::Auto),
@@ -455,6 +624,24 @@ async fn main() -> Result<()> {
         .await?;
 
     connection.request_name("org.scx.Loader").await?;
+
+    // Unconditional: zbus caches update only from signal entries.
+    let iface_ref = connection
+        .object_server()
+        .interface::<_, ScxLoader>("/org/scx/Loader")
+        .await?;
+    {
+        let iface = iface_ref.get().await;
+        let mut announcement: HashMap<_, _> = iface.state.property_values().into_iter().collect();
+        // The generation is what makes the announcement visible even
+        // when every runtime value is identical to the previous
+        // instance's — a value-comparing subscriber has nothing else to
+        // notice a silent idle-to-idle replacement by.
+        announcement.insert("DaemonGeneration", Value::from(iface.generation.clone()));
+        if let Err(err) = emit_properties_changed(iface_ref.signal_emitter(), announcement).await {
+            log::warn!("failed to announce the initial state: {err}");
+        }
+    }
 
     // if user set default scheduler, then start it
     if let Some(default_sched) = &config.default_sched {
@@ -760,4 +947,141 @@ async fn check_authorization_inter(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(scx: Option<SupportedSched>, mode: SchedMode, args: Option<&[&str]>) -> SchedState {
+        SchedState {
+            scx,
+            mode,
+            args: args.map(|a| a.iter().map(ToString::to_string).collect()),
+        }
+    }
+
+    /// One row per state-moving method.
+    #[test]
+    fn diff_transition_table() {
+        let idle = state(None, SchedMode::Auto, None);
+        let gaming = state(Some(SupportedSched::Bpfland), SchedMode::Gaming, None);
+        let custom = state(
+            Some(SupportedSched::Bpfland),
+            SchedMode::Auto,
+            Some(&["-k", "-s", "5000"]),
+        );
+
+        // Fresh start into a mode: scheduler and mode move, args stay empty.
+        assert_eq!(
+            idle.diff(&gaming),
+            ChangedProps {
+                scheduler: true,
+                mode: true,
+                args: false
+            }
+        );
+
+        // Mode run replaced by a custom-arguments run of the same
+        // scheduler: the name is stable, mode resets, args appear.
+        assert_eq!(
+            gaming.diff(&custom),
+            ChangedProps {
+                scheduler: false,
+                mode: true,
+                args: true
+            }
+        );
+
+        // Same scheduler, same mode, different arguments — only args.
+        let custom2 = state(
+            Some(SupportedSched::Bpfland),
+            SchedMode::Auto,
+            Some(&["--slice-us", "2000"]),
+        );
+        assert_eq!(
+            custom.diff(&custom2),
+            ChangedProps {
+                scheduler: false,
+                mode: false,
+                args: true
+            }
+        );
+
+        // `None` and `Some([])` are the same observable D-Bus value: both
+        // are exposed as an empty array, so crossing that internal
+        // representation boundary must not emit a fake property change.
+        let empty_custom = state(Some(SupportedSched::Bpfland), SchedMode::Auto, Some(&[]));
+        let plain_auto = state(Some(SupportedSched::Bpfland), SchedMode::Auto, None);
+        assert_eq!(plain_auto.diff(&empty_custom), ChangedProps::NONE);
+        assert_eq!(empty_custom.diff(&plain_auto), ChangedProps::NONE);
+
+        // Restart re-applies the identical state: nothing may be emitted.
+        assert_eq!(gaming.diff(&gaming.clone()), ChangedProps::NONE);
+
+        // Stop resets the mode per the documented contract.
+        let stopped = state(None, SchedMode::Auto, None);
+        assert_eq!(
+            gaming.diff(&stopped),
+            ChangedProps {
+                scheduler: true,
+                mode: true,
+                args: false
+            }
+        );
+
+        // Stop after a custom-arguments run also clears the args.
+        let stopped_auto = state(None, SchedMode::Auto, None);
+        assert_eq!(
+            custom.diff(&stopped_auto),
+            ChangedProps {
+                scheduler: true,
+                mode: false,
+                args: true
+            }
+        );
+    }
+
+    /// Every hand-built `PropertiesChanged` dictionary — the diff
+    /// emission and the startup announcement alike — draws its entries
+    /// from `property_values`, so this pins that single source to the
+    /// contract: the names and the signatures the introspection XML
+    /// declares ("s", "u", "as"), and the representation the property
+    /// getters expose for "nothing" ("unknown", an empty array).
+    #[test]
+    fn property_values_match_the_declared_properties() {
+        let [(n1, v1), (n2, v2), (n3, v3)] = state(None, SchedMode::Gaming, None).property_values();
+        assert_eq!(
+            (n1, v1.value_signature().to_string().as_str()),
+            ("CurrentScheduler", "s")
+        );
+        assert_eq!(
+            (n2, v2.value_signature().to_string().as_str()),
+            ("SchedulerMode", "u")
+        );
+        assert_eq!(
+            (n3, v3.value_signature().to_string().as_str()),
+            ("CurrentSchedulerArgs", "as")
+        );
+        assert_eq!(v1, Value::from(String::from("unknown")));
+        assert_eq!(v2, Value::from(SchedMode::Gaming));
+        assert_eq!(v3, Value::from(Vec::<String>::new()));
+
+        // The announcement's extra key: a unique bus name, wire type "s".
+        assert_eq!(
+            Value::from(String::from(":1.247"))
+                .value_signature()
+                .to_string(),
+            "s"
+        );
+
+        let [(_, running), _, (_, args)] = state(
+            Some(SupportedSched::Bpfland),
+            SchedMode::Auto,
+            Some(&["-k"]),
+        )
+        .property_values();
+        assert_eq!(running, Value::from(String::from("scx_bpfland")));
+        assert_eq!(args, Value::from(vec![String::from("-k")]));
+    }
 }

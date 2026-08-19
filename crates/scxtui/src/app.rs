@@ -15,7 +15,7 @@ use scx_loader::SchedMode;
 use crate::args::{expand_input, ArgsExpandError};
 use crate::backend::loader::LoaderBackend;
 use crate::backend::service::ServiceBackend;
-use crate::backend::{Capabilities, ModeArgs, SchedulerBackend, Status};
+use crate::backend::{Capabilities, ModeArgs, RuntimeStatus, SchedulerBackend, Status};
 use crate::kernel::{self, KernelState};
 use crate::logs::{self, LogLine};
 use crate::ui;
@@ -36,13 +36,10 @@ fn mode_label(mode: SchedMode) -> &'static str {
 
 /// How often the input poll wakes up to redraw / refresh.
 const TICK: Duration = Duration::from_millis(250);
-/// How often the status is refreshed in the background. The scheduler can
-/// change under us (scxctl, another scxtui, a desktop applet), so the view
-/// must not assume it is the only writer. Kept moderate because with property
-/// caching disabled every refresh is a real round-trip to the daemon. The
-/// proper end state is the daemon emitting `PropertiesChanged` so clients
-/// subscribe instead of polling; until that lands upstream this stays a poll.
+/// Poll cadence until the push channel proves itself.
 const REFRESH_EVERY: Duration = Duration::from_secs(5);
+/// Relaxed cadence once push is confirmed.
+const SAFETY_REFRESH: Duration = Duration::from_secs(30);
 /// Minimum spacing between two scheduler-affecting actions. Linux terminals
 /// deliver key autorepeat as plain `Press` events (no kitty protocol), so
 /// without this, holding `r` would fire one restart per repeat.
@@ -151,6 +148,26 @@ pub struct Message {
     shown_at: Instant,
 }
 
+/// One refresh's fetch result and token check; trust needs both.
+struct RefreshOutcome {
+    instance: DaemonInstance,
+    status_ok: bool,
+}
+
+/// Outcome of a daemon instance-token check, from the push path's point
+/// of view (see [`App::check_daemon_instance`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DaemonInstance {
+    /// Owner resolved and matches the previously observed instance.
+    Same,
+    /// Owner resolved to a different instance than previously observed.
+    Replaced,
+    /// Owner could not be resolved — the daemon is down, or a transient
+    /// resolution hiccup; indistinguishable from here.
+    Unknown,
+}
+
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     backend: Box<dyn SchedulerBackend>,
     backend_kind: BackendKind,
@@ -170,6 +187,13 @@ pub struct App {
     /// Last observed backend instance token; a change invalidates
     /// `mode_args`.
     daemon_instance: Option<String>,
+    /// Only a *difference* against it is acted on; never synced to polled
+    /// truth.
+    pushed: Option<RuntimeStatus>,
+    /// First push movement relaxes the poll; the first read is baseline.
+    push_confirmed: bool,
+    /// Previous tick's dispute bit; makes the tripwire edge-triggered.
+    kernel_disputed: bool,
     /// Custom-arguments field; `Some` while the user is typing. While
     /// open it owns every key press.
     pub args_input: Option<ArgsInput>,
@@ -207,6 +231,9 @@ impl App {
             kernel: None,
             mode_args: HashMap::new(),
             daemon_instance: None,
+            pushed: None,
+            push_confirmed: false,
+            kernel_disputed: false,
             args_input: None,
             message: None,
             last_action: None,
@@ -323,7 +350,15 @@ impl App {
                 }
             }
 
-            if last_refresh.elapsed() >= REFRESH_EVERY {
+            // Sysfs can change with no daemon involved; rides every tick.
+            self.kernel = kernel::read();
+
+            // Pushed changes do not reset the safety poll.
+            self.apply_pushed_status();
+            if self.reconcile_kernel_dispute() {
+                last_refresh = Instant::now();
+            }
+            if last_refresh.elapsed() >= self.refresh_interval() {
                 self.refresh_status();
                 last_refresh = Instant::now();
             }
@@ -555,11 +590,11 @@ press Esc and use Enter instead",
                 self.schedulers = schedulers;
                 self.selected = 0;
                 self.mode_idx = 0;
-                // Instance tokens are per-backend; comparing across
-                // backends would be meaningless, so both the cache and the
-                // observed token start over.
+                // observed token start over — and the push baseline with them.
                 self.mode_args.clear();
                 self.daemon_instance = None;
+                self.pushed = None;
+                self.push_confirmed = false;
                 self.refresh_status();
                 self.sync_selection_to_running();
                 self.refresh_modes();
@@ -843,15 +878,97 @@ press Esc and use Enter instead",
         self.refresh_status();
     }
 
-    /// Deliberately never touches the message bar: the status panel has
-    /// its own channel for a failed query (`State: unknown` in red via
-    /// `status = None`), and writing an error here would clobber a fresh
-    /// action result — the action can succeed while the follow-up poll
-    /// fails, and the user should still see the success.
-    fn refresh_status(&mut self) {
+    fn refresh_status(&mut self) -> RefreshOutcome {
         self.status = self.backend.status().ok();
+        let status_ok = self.status.is_some();
         self.kernel = kernel::read();
-        self.check_daemon_instance();
+        RefreshOutcome {
+            instance: self.check_daemon_instance(),
+            status_ok,
+        }
+    }
+
+    /// Conservative until push is confirmed.
+    fn refresh_interval(&self) -> Duration {
+        if self.push_confirmed {
+            SAFETY_REFRESH
+        } else {
+            REFRESH_EVERY
+        }
+    }
+
+    /// The panel's warning; the event loop reuses it as a tripwire.
+    pub fn kernel_warning(&self) -> Option<String> {
+        let kernel = self.kernel.as_ref()?;
+        let loader_current = self
+            .status
+            .as_ref()
+            .and_then(|status| status.current.as_deref());
+        match (loader_current, kernel.enabled()) {
+            // Loader thinks nothing runs, kernel disagrees: something was
+            // started behind the loader's back (scx.service, a manual run).
+            (None, true) => {
+                Some("a scheduler is attached outside of scx_loader's control".to_owned())
+            }
+            // Loader thinks a scheduler runs, kernel disagrees: it crashed
+            // or was ejected (watchdog) without the loader noticing yet.
+            (Some(sched), false) => Some(format!(
+                "loader reports {sched}, but the kernel shows no attached scheduler"
+            )),
+            // Both agree something runs — but is it the same something?
+            (Some(sched), true) if !kernel.matches(sched) => {
+                let ops = kernel.ops.as_deref().unwrap_or("?");
+                Some(format!(
+                    "loader reports {sched}, but the kernel ops name is \"{ops}\""
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Re-asks immediately when a dispute appears (a dead daemon emits
+    /// nothing). Edge-triggered; returns whether it refreshed.
+    fn reconcile_kernel_dispute(&mut self) -> bool {
+        let disputed = self.kernel_warning().is_some();
+        let fire = disputed && !self.kernel_disputed;
+        if fire {
+            self.refresh_status();
+        }
+        // Post-refresh truth: unresolved disputes stand without
+        // re-triggering.
+        self.kernel_disputed = self.kernel_warning().is_some();
+        fire
+    }
+
+    /// Doorbell, never payload: a movement triggers one authoritative
+    /// refresh and only that answer reaches the display; the poll relaxes
+    /// only on a same-owner movement.
+    fn apply_pushed_status(&mut self) {
+        let now = match self.backend.cached_status() {
+            Ok(Some(now)) => now,
+            Ok(None) => return,
+            Err(_) => {
+                // Opportunistic; the real guarantee is the token reset.
+                if self.pushed.is_some() {
+                    self.pushed = None;
+                    self.push_confirmed = false;
+                }
+                return;
+            }
+        };
+        if self.pushed.as_ref() == Some(&now) {
+            return;
+        }
+        if self.pushed.is_none() {
+            // The first read primes the doorbell, it does not ring it.
+            self.pushed = Some(now);
+            return;
+        }
+        let outcome = self.refresh_status();
+        // New baseline even on failure, or it rings every tick.
+        self.pushed = Some(now);
+        // Per ring: successful fetch AND same owner; failure revokes.
+        self.push_confirmed = outcome.status_ok && outcome.instance == DaemonInstance::Same;
     }
 
     /// Re-enumerates the scheduler list. The list is otherwise fetched
@@ -898,28 +1015,30 @@ press Esc and use Enter instead",
         }
     }
 
-    /// Detects a daemon restart via the backend's instance token and drops
-    /// the mode-argument cache when one happened. A replaced daemon is the
-    /// one event that can make cached configuration answers stale (the
-    /// daemon reads its config once at startup) — watching the config
-    /// file's mtime instead would be both weaker (an edit without a
-    /// restart changes nothing) and blind to a restart with an unchanged
-    /// file. Rides along the periodic status refresh, so an external
-    /// `systemctl restart scx_loader` is picked up within one poll even
-    /// though D-Bus activation hides it from the calls themselves.
-    fn check_daemon_instance(&mut self) {
+    fn check_daemon_instance(&mut self) -> DaemonInstance {
         let Some(token) = self.backend.instance_token() else {
-            return;
+            // Caches stay; the relaxed cadence does not ride out an outage.
+            self.pushed = None;
+            self.push_confirmed = false;
+            return DaemonInstance::Unknown;
         };
-        if self
+        let replaced = self
             .daemon_instance
             .as_deref()
-            .is_some_and(|old| old != token)
-        {
+            .is_some_and(|old| old != token);
+        if replaced {
             self.mode_args.clear();
             self.refresh_modes();
+            // Confirmation is per instance: a replaced daemon re-earns it.
+            self.pushed = None;
+            self.push_confirmed = false;
         }
         self.daemon_instance = Some(token);
+        if replaced {
+            DaemonInstance::Replaced
+        } else {
+            DaemonInstance::Same
+        }
     }
 
     fn info(&mut self, text: &str) {
@@ -961,6 +1080,23 @@ mod tests {
         /// Current instance token, shared so a test can "restart" the
         /// daemon underneath the app.
         token: Rc<RefCell<Option<String>>>,
+        /// `None` = no push channel.
+        cached: Rc<RefCell<Option<Status>>>,
+        /// When set, `cached_status` errors — models the daemon side of
+        /// the push channel going away.
+        push_broken: Rc<RefCell<bool>>,
+        generation: Rc<RefCell<String>>,
+        /// How many times `status` reached the backend, shared with the
+        /// test so the dispute tripwire is observable from the outside.
+        status_queries: Rc<RefCell<usize>>,
+        /// The authoritative answer `status` returns, shared so a test
+        /// can model what the daemon actually reports — as opposed to
+        /// what the (possibly stale) push snapshot claims.
+        truth: Rc<RefCell<Status>>,
+        /// When set, `status` errors after counting the attempt — models
+        /// the authoritative fetch failing (a dead daemon, a D-Bus
+        /// hiccup) independently of the push channel.
+        status_broken: Rc<RefCell<bool>>,
     }
 
     impl StubBackend {
@@ -970,6 +1106,18 @@ mod tests {
                 modes: HashMap::new(),
                 mode_queries: Rc::new(RefCell::new(0)),
                 token: Rc::new(RefCell::new(None)),
+                cached: Rc::new(RefCell::new(None)),
+                push_broken: Rc::new(RefCell::new(false)),
+                generation: Rc::new(RefCell::new(String::from(":1.1"))),
+                status_queries: Rc::new(RefCell::new(0)),
+                truth: Rc::new(RefCell::new(Status {
+                    current: None,
+                    mode: SchedMode::Auto,
+                    args: Vec::new(),
+                    default_sched: None,
+                    default_mode: SchedMode::Auto,
+                })),
+                status_broken: Rc::new(RefCell::new(false)),
             }
         }
     }
@@ -990,19 +1138,28 @@ mod tests {
             }
         }
         fn status(&self) -> Result<Status> {
-            // Benign "nothing running" answer, so tests may drive paths
-            // that refresh the status; tests interested in a particular
-            // state still set `App::status` directly afterwards.
-            Ok(Status {
-                current: None,
-                mode: SchedMode::Auto,
-                args: Vec::new(),
-                default_sched: None,
-                default_mode: SchedMode::Auto,
-            })
+            *self.status_queries.borrow_mut() += 1;
+            if *self.status_broken.borrow() {
+                return Err(anyhow!("authoritative fetch broken"));
+            }
+            // The configured authoritative answer; defaults to a benign
+            // "nothing running", so tests may drive refresh paths
+            // without setting it up.
+            Ok(self.truth.borrow().clone())
         }
         fn supported_schedulers(&self) -> Result<Vec<String>> {
             Ok(self.schedulers.clone())
+        }
+        fn cached_status(&self) -> Result<Option<RuntimeStatus>> {
+            if *self.push_broken.borrow() {
+                return Err(anyhow!("push channel broken"));
+            }
+            Ok(self.cached.borrow().as_ref().map(|status| RuntimeStatus {
+                current: status.current.clone(),
+                mode: status.mode,
+                args: status.args.clone(),
+                generation: self.generation.borrow().clone(),
+            }))
         }
         fn mode_args(&self, sched: &str) -> Result<ModeArgs> {
             *self.mode_queries.borrow_mut() += 1;
@@ -1335,5 +1492,462 @@ mod tests {
         app.sync_selection_to_running();
         assert_eq!(app.selected, 0);
         assert_eq!(app.mode_idx, 2);
+    }
+
+    fn idle_status() -> Status {
+        Status {
+            current: None,
+            mode: SchedMode::Auto,
+            args: Vec::new(),
+            default_sched: None,
+            default_mode: SchedMode::Auto,
+        }
+    }
+
+    fn running_status(sched: &str) -> Status {
+        Status {
+            current: Some(sched.into()),
+            ..idle_status()
+        }
+    }
+
+    fn running_with_args(sched: &str, args: &[&str]) -> Status {
+        Status {
+            args: args.iter().map(ToString::to_string).collect(),
+            ..running_status(sched)
+        }
+    }
+
+    #[test]
+    fn first_push_read_is_baseline_only() {
+        let backend = StubBackend::new();
+        let cached = Rc::clone(&backend.cached);
+        let mut app = app_with_backend(backend);
+        *cached.borrow_mut() = Some(running_status("scx_bpfland"));
+
+        app.apply_pushed_status();
+
+        // The snapshot became the baseline but was not treated as news:
+        // the status panel is untouched, the poll stays conservative.
+        assert!(app.status.is_none());
+        assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+    }
+
+    #[test]
+    fn push_movement_fetches_truth_and_relaxes_the_poll() {
+        let backend = StubBackend::new();
+        let cached = Rc::clone(&backend.cached);
+        let token = Rc::clone(&backend.token);
+        let queries = Rc::clone(&backend.status_queries);
+        let truth = Rc::clone(&backend.truth);
+        let mut app = app_with_backend(backend);
+        *token.borrow_mut() = Some("owner-1".into());
+        *cached.borrow_mut() = Some(idle_status());
+        app.apply_pushed_status();
+        assert_eq!(*queries.borrow(), 0);
+
+        *truth.borrow_mut() = running_status("scx_cake");
+        *cached.borrow_mut() = Some(running_status("scx_cake"));
+        app.apply_pushed_status();
+
+        // A moved snapshot rings the bell: one authoritative fetch, its
+        // answer on the panel, and the safety poll takes over from the
+        // 5s poll.
+        assert_eq!(*queries.borrow(), 1);
+        assert_eq!(
+            app.status.as_ref().and_then(|s| s.current.as_deref()),
+            Some("scx_cake")
+        );
+        assert_eq!(app.refresh_interval(), SAFETY_REFRESH);
+    }
+
+    #[test]
+    fn push_payload_is_the_authoritative_answer_not_the_cache() {
+        // The cache decides *whether* to fetch, never *what* to display:
+        // when the two disagree — a torn read of the three getters, or
+        // any staleness — the fetched answer wins, within the same tick.
+        let backend = StubBackend::new();
+        let cached = Rc::clone(&backend.cached);
+        let token = Rc::clone(&backend.token);
+        let truth = Rc::clone(&backend.truth);
+        let mut app = app_with_backend(backend);
+        *token.borrow_mut() = Some("owner-1".into());
+        *cached.borrow_mut() = Some(idle_status());
+        app.apply_pushed_status();
+
+        *truth.borrow_mut() = running_status("scx_lavd");
+        *cached.borrow_mut() = Some(running_status("scx_cake"));
+        app.apply_pushed_status();
+
+        assert_eq!(
+            app.status.as_ref().and_then(|s| s.current.as_deref()),
+            Some("scx_lavd")
+        );
+    }
+
+    #[test]
+    fn frozen_push_snapshot_never_overrides_polled_truth() {
+        let backend = StubBackend::new();
+        let cached = Rc::clone(&backend.cached);
+        let mut app = app_with_backend(backend);
+        // A daemon that never emits: the snapshot freezes at its first
+        // value, here claiming scx_bpfland forever.
+        *cached.borrow_mut() = Some(running_status("scx_bpfland"));
+        app.apply_pushed_status();
+
+        // The safety poll later learns the actual truth.
+        app.status = Some(running_status("scx_lavd"));
+
+        // Any number of further reads of the frozen snapshot must neither
+        // clobber that truth nor relax the poll.
+        app.apply_pushed_status();
+        app.apply_pushed_status();
+        assert_eq!(
+            app.status.as_ref().and_then(|s| s.current.as_deref()),
+            Some("scx_lavd")
+        );
+        assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+    }
+
+    #[test]
+    fn backend_without_push_channel_keeps_polling() {
+        let mut app = app_with_backend(StubBackend::new());
+
+        app.apply_pushed_status();
+
+        assert!(app.status.is_none());
+        assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+    }
+
+    fn disabled_kernel() -> KernelState {
+        KernelState {
+            state: "disabled".into(),
+            ops: None,
+        }
+    }
+
+    #[test]
+    fn kernel_dispute_is_edge_triggered_and_rearms_after_refresh() {
+        let backend = StubBackend::new();
+        let queries = Rc::clone(&backend.status_queries);
+        let mut app = app_with_backend(backend);
+
+        // A standing dispute is not an edge and must not hammer the
+        // daemon every tick.
+        app.status = Some(running_status("scx_cake"));
+        app.kernel = Some(disabled_kernel());
+        app.kernel_disputed = true;
+        assert!(!app.reconcile_kernel_dispute());
+        assert_eq!(*queries.borrow(), 0);
+
+        // Arm the edge. The authoritative refresh in this stub resolves
+        // the disagreement, so the stored state must be recomputed from
+        // the post-refresh snapshot rather than the stale pre-refresh
+        // bit.
+        app.kernel_disputed = false;
+        assert!(app.reconcile_kernel_dispute());
+        assert_eq!(*queries.borrow(), 1);
+        assert!(!app.kernel_disputed);
+
+        // A new disagreement before another tick is therefore a new edge
+        // and gets its own immediate refresh.
+        app.status = Some(running_status("scx_cake"));
+        app.kernel = Some(disabled_kernel());
+        assert!(app.reconcile_kernel_dispute());
+        assert_eq!(*queries.borrow(), 2);
+    }
+
+    #[test]
+    fn broken_push_channel_falls_back_to_the_conservative_poll() {
+        let backend = StubBackend::new();
+        let cached = Rc::clone(&backend.cached);
+        let broken = Rc::clone(&backend.push_broken);
+        let token = Rc::clone(&backend.token);
+        let mut app = app_with_backend(backend);
+
+        // Confirmed, relaxed channel...
+        *token.borrow_mut() = Some("owner-1".into());
+        *cached.borrow_mut() = Some(idle_status());
+        app.apply_pushed_status();
+        *cached.borrow_mut() = Some(running_status("scx_cake"));
+        app.apply_pushed_status();
+        assert_eq!(app.refresh_interval(), SAFETY_REFRESH);
+
+        // ...whose daemon side goes away: back to the conservative poll.
+        *broken.borrow_mut() = true;
+        app.apply_pushed_status();
+        assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+
+        // A repaired channel starts from scratch: the first read is a
+        // baseline again, not a change to act on.
+        *broken.borrow_mut() = false;
+        *cached.borrow_mut() = Some(idle_status());
+        let polled = app.status.clone();
+        app.apply_pushed_status();
+        assert_eq!(app.status, polled);
+        assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+    }
+
+    #[test]
+    fn replaced_daemon_must_re_earn_the_relaxed_poll() {
+        let backend = StubBackend::new();
+        let cached = Rc::clone(&backend.cached);
+        let token = Rc::clone(&backend.token);
+        let mut app = app_with_backend(backend);
+
+        // Confirmed channel against the first daemon instance.
+        *token.borrow_mut() = Some("owner-1".into());
+        app.refresh_status();
+        *cached.borrow_mut() = Some(idle_status());
+        app.apply_pushed_status();
+        *cached.borrow_mut() = Some(running_status("scx_cake"));
+        app.apply_pushed_status();
+        assert_eq!(app.refresh_interval(), SAFETY_REFRESH);
+
+        // The daemon gets replaced. The stub keeps serving the old
+        // snapshot values on purpose — modeling a cache that never
+        // errors after owner loss — because the reset must not depend
+        // on the error path firing.
+        *token.borrow_mut() = Some("owner-2".into());
+        app.refresh_status();
+        assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+
+        // The frozen snapshot is a baseline for the new instance, not a
+        // change to act on.
+        let polled = app.status.clone();
+        app.apply_pushed_status();
+        assert_eq!(app.status, polled);
+        assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+    }
+
+    #[test]
+    fn daemon_outage_drops_the_relaxed_cadence_but_keeps_config_caches() {
+        let mut backend = StubBackend::new();
+        backend
+            .modes
+            .insert("scx_bpfland".to_owned(), bpfland_modes());
+        let cached = Rc::clone(&backend.cached);
+        let token = Rc::clone(&backend.token);
+        let mut app = app_with_backend(backend);
+
+        // Healthy, confirmed instance with a populated mode cache.
+        *token.borrow_mut() = Some("owner-1".into());
+        app.refresh_modes();
+        assert!(app.mode_args.contains_key("scx_bpfland"));
+        *cached.borrow_mut() = Some(idle_status());
+        app.apply_pushed_status();
+        *cached.borrow_mut() = Some(running_status("scx_cake"));
+        app.apply_pushed_status();
+        assert_eq!(app.refresh_interval(), SAFETY_REFRESH);
+
+        // Owner gone. The confirmation must not survive the outage, but
+        // known-good config answers must — a mere hiccup looks exactly
+        // the same from here, and their staleness across a *replacement*
+        // is what the token-change reset handles once a new owner
+        // appears.
+        *token.borrow_mut() = None;
+        app.refresh_status();
+        assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+        assert!(app.mode_args.contains_key("scx_bpfland"));
+    }
+
+    #[test]
+    fn dying_gasp_rings_the_bell_but_extends_no_trust() {
+        let backend = StubBackend::new();
+        let cached = Rc::clone(&backend.cached);
+        let token = Rc::clone(&backend.token);
+        let broken = Rc::clone(&backend.status_broken);
+        let mut app = app_with_backend(backend);
+
+        // Confirmed channel against a live owner.
+        *token.borrow_mut() = Some("owner-1".into());
+        *cached.borrow_mut() = Some(running_status("scx_cake"));
+        app.apply_pushed_status();
+        *cached.borrow_mut() = Some(running_status("scx_lavd"));
+        app.apply_pushed_status();
+        assert_eq!(app.refresh_interval(), SAFETY_REFRESH);
+
+        // Clean shutdown: show unknown, extend no trust.
+        *cached.borrow_mut() = Some(idle_status());
+        *token.borrow_mut() = None;
+        *broken.borrow_mut() = true;
+        app.apply_pushed_status();
+        assert_eq!(app.status, None);
+        assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+    }
+
+    #[test]
+    fn failed_fetch_never_confirms_the_push() {
+        let backend = StubBackend::new();
+        let cached = Rc::clone(&backend.cached);
+        let token = Rc::clone(&backend.token);
+        let broken = Rc::clone(&backend.status_broken);
+        let queries = Rc::clone(&backend.status_queries);
+        let truth = Rc::clone(&backend.truth);
+        let mut app = app_with_backend(backend);
+
+        // Confirmed channel against owner-1.
+        *token.borrow_mut() = Some("owner-1".into());
+        *truth.borrow_mut() = running_status("scx_cake");
+        *cached.borrow_mut() = Some(idle_status());
+        app.apply_pushed_status();
+        *cached.borrow_mut() = Some(running_status("scx_cake"));
+        app.apply_pushed_status();
+        assert_eq!(app.refresh_interval(), SAFETY_REFRESH);
+
+        // Fetch fails, same owner: show unknown, revoke trust.
+        *broken.borrow_mut() = true;
+        *cached.borrow_mut() = Some(running_status("scx_lavd"));
+        app.apply_pushed_status();
+        let attempts = *queries.borrow();
+
+        assert_eq!(app.status, None);
+        assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+
+        // The baseline advanced despite the failure: the same snapshot
+        // must not ring the bell four times a second — recovery rides
+        // the (now conservative) safety poll instead.
+        app.apply_pushed_status();
+        assert_eq!(*queries.borrow(), attempts);
+    }
+
+    #[test]
+    fn stale_owner_keys_never_return_on_later_partial_changes() {
+        let backend = StubBackend::new();
+        let cached = Rc::clone(&backend.cached);
+        let token = Rc::clone(&backend.token);
+        let queries = Rc::clone(&backend.status_queries);
+        let truth = Rc::clone(&backend.truth);
+        let mut app = app_with_backend(backend);
+
+        // Act 1: confirmed channel against owner-1, whose actual state
+        // carries arguments — the key that will go stale.
+        *token.borrow_mut() = Some("owner-1".into());
+        *truth.borrow_mut() = running_with_args("scx_cake", &["--foo"]);
+        *cached.borrow_mut() = Some(idle_status());
+        app.apply_pushed_status();
+        *cached.borrow_mut() = Some(running_with_args("scx_cake", &["--foo"]));
+        app.apply_pushed_status();
+        assert_eq!(app.refresh_interval(), SAFETY_REFRESH);
+        let polls_so_far = *queries.borrow();
+
+        // Act 2: owner-2 replaces owner-1 and its full-state
+        // announcement is missed. Its diff re-emits only the scheduler,
+        // so the cache mixes owner-2's scheduler with owner-1's
+        // leftover arguments — a state no daemon ever held.
+        *token.borrow_mut() = Some("owner-2".into());
+        *truth.borrow_mut() = running_status("scx_lavd");
+        *cached.borrow_mut() = Some(Status {
+            current: Some("scx_lavd".into()),
+            ..running_with_args("scx_lavd", &["--foo"])
+        });
+        app.apply_pushed_status();
+
+        // One authoritative fetch answered instead of the chimera, and
+        // the replacement movement did not confirm.
+        assert_eq!(*queries.borrow(), polls_so_far + 1);
+        assert_eq!(app.status, Some(running_status("scx_lavd")));
+        assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+
+        // Partial change leaves a stale cache key; show owner-2's truth.
+        *truth.borrow_mut() = Status {
+            mode: SchedMode::Gaming,
+            ..running_status("scx_lavd")
+        };
+        *cached.borrow_mut() = Some(Status {
+            mode: SchedMode::Gaming,
+            ..running_with_args("scx_lavd", &["--foo"])
+        });
+        app.apply_pushed_status();
+
+        assert_eq!(*queries.borrow(), polls_so_far + 2);
+        let status = app.status.as_ref().expect("fetched");
+        assert_eq!(status.mode, SchedMode::Gaming);
+        assert!(status.args.is_empty(), "stale owner-1 arguments returned");
+        assert_eq!(app.refresh_interval(), SAFETY_REFRESH);
+    }
+
+    #[test]
+    fn poll_first_replacement_never_applies_the_stale_cache() {
+        let backend = StubBackend::new();
+        let cached = Rc::clone(&backend.cached);
+        let token = Rc::clone(&backend.token);
+        let queries = Rc::clone(&backend.status_queries);
+        let truth = Rc::clone(&backend.truth);
+        let mut app = app_with_backend(backend);
+
+        // Confirmed channel against owner-1, running with arguments.
+        *token.borrow_mut() = Some("owner-1".into());
+        *truth.borrow_mut() = running_with_args("scx_cake", &["--foo"]);
+        *cached.borrow_mut() = Some(idle_status());
+        app.apply_pushed_status();
+        *cached.borrow_mut() = Some(running_with_args("scx_cake", &["--foo"]));
+        app.apply_pushed_status();
+
+        // The safety poll notices owner-2 first: the token check wipes
+        // the baseline and the confirmation along the way.
+        *token.borrow_mut() = Some("owner-2".into());
+        *truth.borrow_mut() = running_status("scx_lavd");
+        app.refresh_status();
+        assert_eq!(app.status, Some(running_status("scx_lavd")));
+        assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+        let polls_so_far = *queries.borrow();
+
+        // The next look at the still-stale cache is a baseline priming,
+        // not data: nothing may reach the display from it.
+        app.apply_pushed_status();
+        assert_eq!(*queries.borrow(), polls_so_far);
+        assert_eq!(app.status, Some(running_status("scx_lavd")));
+
+        // Owner-2's later partial change moves the cache but leaves the
+        // stale arguments key in place; the display gets the fetched
+        // truth, never the leftover.
+        *truth.borrow_mut() = Status {
+            mode: SchedMode::PowerSave,
+            ..running_status("scx_lavd")
+        };
+        *cached.borrow_mut() = Some(Status {
+            mode: SchedMode::PowerSave,
+            ..running_with_args("scx_lavd", &["--foo"])
+        });
+        app.apply_pushed_status();
+
+        assert_eq!(*queries.borrow(), polls_so_far + 1);
+        let status = app.status.as_ref().expect("fetched");
+        assert_eq!(status.mode, SchedMode::PowerSave);
+        assert!(status.args.is_empty(), "stale owner-1 arguments returned");
+    }
+
+    #[test]
+    fn identical_values_under_a_new_generation_still_ring() {
+        let backend = StubBackend::new();
+        let cached = Rc::clone(&backend.cached);
+        let token = Rc::clone(&backend.token);
+        let queries = Rc::clone(&backend.status_queries);
+        let generation = Rc::clone(&backend.generation);
+        let mut app = app_with_backend(backend);
+
+        // Confirmed channel against owner-1, which then goes idle — the
+        // exact runtime values a silent replacement will re-announce.
+        *token.borrow_mut() = Some("owner-1".into());
+        *cached.borrow_mut() = Some(running_status("scx_cake"));
+        app.apply_pushed_status();
+        *cached.borrow_mut() = Some(idle_status());
+        app.apply_pushed_status();
+        assert_eq!(app.refresh_interval(), SAFETY_REFRESH);
+        let polls_so_far = *queries.borrow();
+
+        // Silent replacement, identical values: only the generation moves.
+        *token.borrow_mut() = Some("owner-2".into());
+        *generation.borrow_mut() = String::from(":1.2");
+        app.apply_pushed_status();
+
+        assert_eq!(*queries.borrow(), polls_so_far + 1);
+        assert_eq!(app.refresh_interval(), REFRESH_EVERY);
+
+        // The new generation is now the baseline: an unchanged snapshot
+        // stays inert.
+        app.apply_pushed_status();
+        assert_eq!(*queries.borrow(), polls_so_far + 1);
     }
 }
