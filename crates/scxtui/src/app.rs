@@ -8,11 +8,11 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use scx_loader::SchedMode;
 
-use crate::args::{expand_input, ArgsExpandError};
+use crate::args::{ArgsExpandError, expand_input};
 use crate::backend::loader::LoaderBackend;
 use crate::backend::service::ServiceBackend;
 use crate::backend::{Capabilities, ModeArgs, SchedulerBackend, Status};
@@ -315,12 +315,11 @@ impl App {
                 continue;
             }
 
-            if event::poll(TICK)? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        self.on_key(key);
-                    }
-                }
+            if event::poll(TICK)?
+                && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+            {
+                self.on_key(key);
             }
 
             if last_refresh.elapsed() >= REFRESH_EVERY {
@@ -663,10 +662,10 @@ press Esc and use Enter instead",
             return;
         };
         self.selected = idx;
-        if status.args.is_empty() {
-            if let Some(idx) = MODES.iter().position(|m| *m == status.mode) {
-                self.mode_idx = idx;
-            }
+        if status.args.is_empty()
+            && let Some(idx) = MODES.iter().position(|m| *m == status.mode)
+        {
+            self.mode_idx = idx;
         }
     }
 

@@ -11,7 +11,7 @@
 
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::TimeZone;
 
 /// Units the log view can inspect, matching the two management backends:

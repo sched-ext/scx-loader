@@ -18,7 +18,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use scx_loader::SchedMode;
 
 use super::{Capabilities, ModeArgs, SchedulerBackend, Status};

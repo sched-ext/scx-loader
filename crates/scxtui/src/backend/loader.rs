@@ -22,10 +22,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use scx_loader::SchedMode;
-use zbus::blocking::fdo::{DBusProxy, PropertiesProxy};
 use zbus::blocking::Connection;
+use zbus::blocking::fdo::{DBusProxy, PropertiesProxy};
 use zbus::names::{BusName, InterfaceName};
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedValue;
@@ -187,11 +187,7 @@ where
 }
 
 fn none_if_unknown(value: String) -> Option<String> {
-    if value == UNKNOWN {
-        None
-    } else {
-        Some(value)
-    }
+    if value == UNKNOWN { None } else { Some(value) }
 }
 
 impl SchedulerBackend for LoaderBackend {

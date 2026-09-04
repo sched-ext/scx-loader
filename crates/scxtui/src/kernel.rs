@@ -95,7 +95,9 @@ mod tests {
     #[test]
     fn matches_versioned_ops_suffix() {
         // bpfland registers e.g. "bpfland_1.1.2_x86_64_unknown_linux_gnu".
-        assert!(enabled_with(Some("bpfland_1.1.2_x86_64_unknown_linux_gnu")).matches("scx_bpfland"));
+        assert!(
+            enabled_with(Some("bpfland_1.1.2_x86_64_unknown_linux_gnu")).matches("scx_bpfland")
+        );
     }
 
     #[test]

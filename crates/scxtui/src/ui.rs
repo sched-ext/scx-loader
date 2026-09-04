@@ -5,11 +5,11 @@
 //! offset back into the app, so paging and bounds always match the actual
 //! terminal size.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
-use ratatui::Frame;
 
 use crate::app::{App, ArgsInput, View};
 use crate::logs;
