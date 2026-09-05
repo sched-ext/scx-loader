@@ -1,7 +1,7 @@
 [package]
 name = "scxtui"
-version = "1.1.2"
-edition = "2021"
+version = "1.1.3"
+edition = "2024"
 authors = ["Piotr Gorski <piotrgorski@cachyos.org>"]
 license = "GPL-2.0-only"
 description = "TUI for managing sched_ext schedulers via scx_loader"
@@ -15,9 +15,9 @@ anyhow = "1"
 ratatui = "0.30.2"
 # Client-side D-Bus proxy (`dbus::LoaderClientProxyBlocking`) plus the shared
 # `SchedMode` / `SupportedSched` types, exactly as scxctl consumes them.
-scx_loader = { path = "../scx_loader", version="1.1.2" }
+scx_loader = { path = "../scx_loader", version="1.1.3" }
 # Mirrors scxctl's dependency spec; the blocking connection lives here.
-zbus = "5.16"
+zbus = "5.19"
 # Renders argument previews exactly like scxctl renders scheduler
 # arguments (`shell_words::join`), so both clients show the same form.
 shell-words = "1.1"

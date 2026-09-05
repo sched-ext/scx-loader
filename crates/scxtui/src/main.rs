@@ -9,9 +9,9 @@ mod kernel;
 mod logs;
 mod ui;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
-use app::{make_backend, App, BackendKind};
+use app::{App, BackendKind, make_backend};
 
 const USAGE: &str = "\
 scxtui — TUI for managing sched_ext schedulers

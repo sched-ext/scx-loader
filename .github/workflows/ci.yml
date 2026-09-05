@@ -59,6 +59,7 @@ jobs:
 
   format:
     name: rustfmt
+    needs: pre_ci
     if: needs.pre_ci.outputs.continue
     runs-on: ubuntu-latest
     timeout-minutes: 45

@@ -11,7 +11,7 @@
 mod logger;
 
 use scx_loader::dbus::LoaderClientProxy;
-use scx_loader::{config, SchedMode, SupportedSched};
+use scx_loader::{SchedMode, SupportedSched, config};
 
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -27,9 +27,9 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Duration;
 use tokio::time::Instant;
+use zbus::Connection;
 use zbus::interface;
 use zbus::message::Header;
-use zbus::Connection;
 use zbus_polkit::policykit1::{AuthorityProxy, CheckAuthorizationFlags, Subject};
 
 #[derive(Debug, PartialEq)]
@@ -148,36 +148,15 @@ impl ScxLoader {
         self.default_mode
     }
 
-    /// Returns the scheduler modes that are meaningfully configured for
-    /// `scx_name`, i.e. the modes that resolve to a non-empty argument list.
-    /// `Auto` is always included, since it's valid even without explicit
-    /// arguments.
-    ///
-    /// Clients can use this to discover ahead of time which modes will
-    /// have mode-specific arguments applied, rather than finding out only
-    /// after starting/switching that no such arguments are configured.
-    ///
-    /// This has to stay `async`, even though it never awaits anything: zbus's
-    /// `#[interface]` macro deserializes arguments of sync methods by
-    /// reference where possible, and `SupportedSched` (unlike e.g. `&str`)
-    /// only implements `Deserialize` by value, not by reference.
-    #[allow(clippy::unused_async)]
-    async fn scheduler_modes(&self, scx_name: SupportedSched) -> Vec<SchedMode> {
+    /// Get supported modes for the particular scx scheduler
+    #[allow(clippy::needless_pass_by_value)]
+    fn scheduler_modes(&self, scx_name: SupportedSched) -> Vec<SchedMode> {
         config::get_configured_modes(&self.config, &scx_name)
     }
 
-    /// Returns the resolved arguments for every mode of `scx_name`, in a
-    /// stable order. A mode with no configured arguments comes back with an
-    /// empty list, meaning it would just run `scx_name` with its own
-    /// built-in defaults.
-    ///
-    /// Unlike `SchedulerModes`, this returns every mode together with its
-    /// actual arguments, so clients can show the exact configuration
-    /// instead of just which modes are configured.
-    ///
-    /// See `scheduler_modes` for why this has to stay `async`.
-    #[allow(clippy::unused_async)]
-    async fn scheduler_mode_args(&self, scx_name: SupportedSched) -> Vec<(SchedMode, Vec<String>)> {
+    /// Get all arguments for all modes of scx scheduler
+    #[allow(clippy::needless_pass_by_value)]
+    fn scheduler_mode_args(&self, scx_name: SupportedSched) -> Vec<(SchedMode, Vec<String>)> {
         config::get_all_mode_args(&self.config, &scx_name)
     }
 
@@ -384,21 +363,21 @@ async fn monitor_cpu_util() -> Result<()> {
                 cpu_below_threshold_since = Some(Instant::now());
             }
 
-            if cpu_below_threshold_since.unwrap().elapsed() > low_utilization_threshold_duration {
-                if let Some(mut running_sched_loc) = running_sched.take() {
-                    log::info!(
-                        "CPU utilization dropped below 90% for more than 30 seconds, exiting latency-aware scheduler"
-                    );
-                    running_sched_loc
-                        .kill()
-                        .await
-                        .expect("Failed to kill scx_lavd");
-                    let lavd_exit_status = running_sched_loc
-                        .wait()
-                        .await
-                        .expect("Failed to wait on scx_lavd");
-                    log::info!("scx_lavd exited with status: {lavd_exit_status}");
-                }
+            if cpu_below_threshold_since.unwrap().elapsed() > low_utilization_threshold_duration
+                && let Some(mut running_sched_loc) = running_sched.take()
+            {
+                log::info!(
+                    "CPU utilization dropped below 90% for more than 30 seconds, exiting latency-aware scheduler"
+                );
+                running_sched_loc
+                    .kill()
+                    .await
+                    .expect("Failed to kill scx_lavd");
+                let lavd_exit_status = running_sched_loc
+                    .wait()
+                    .await
+                    .expect("Failed to wait on scx_lavd");
+                log::info!("scx_lavd exited with status: {lavd_exit_status}");
             }
         }
 
