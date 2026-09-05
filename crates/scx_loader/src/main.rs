@@ -9,6 +9,7 @@
 #![allow(clippy::cast_possible_wrap)]
 
 mod logger;
+mod power_profiles;
 
 use scx_loader::dbus::LoaderClientProxy;
 use scx_loader::{SchedMode, SupportedSched, config};
@@ -446,6 +447,19 @@ async fn main() -> Result<()> {
             .switch_scheduler(default_sched.clone(), default_mode)
             .await?;
     }
+
+    // Keep the monitor task handle bound in `main` so the runtime aborts the
+    // PPD monitor naturally when `worker_loop` exits and shuts down.
+    let _power_profiles_monitor = if config.power_profiles.enabled {
+        let monitor_connection = connection.clone();
+        let power_profiles_config = config.power_profiles.clone();
+
+        Some(tokio::spawn(async move {
+            power_profiles::monitor(monitor_connection, power_profiles_config).await;
+        }))
+    } else {
+        None
+    };
 
     // run worker/receiver loop
     worker_loop(config, rx).await?;
