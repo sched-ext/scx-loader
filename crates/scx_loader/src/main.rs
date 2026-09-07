@@ -72,6 +72,15 @@ fn death_is_current(current: Option<SpawnId>, dead: SpawnId) -> bool {
     current == Some(dead)
 }
 
+/// A Start while a scheduler runs is refused with this message; `None`
+/// means the start may proceed.
+fn start_refusal(current: Option<&SupportedSched>) -> Option<String> {
+    let current: &str = current.cloned()?.into();
+    Some(format!(
+        "scheduler {current} is already running; use SwitchScheduler instead"
+    ))
+}
+
 /// A child that survived this long earned its respawn budget back.
 const RESPAWN_RENEWAL: Duration = Duration::from_secs(10);
 
@@ -303,6 +312,13 @@ impl ScxLoader {
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        // A Start on a running daemon would mint a fresh claim the runner
+        // then refuses to honor - and the guarded death notice would even
+        // protect that wrong claim. Refuse up front; the runner's own
+        // check stays as the last line of defense.
+        if let Some(refusal) = start_refusal(self.state.scx.as_ref()) {
+            return Err(zbus::fdo::Error::Failed(refusal));
+        }
 
         let effective_mode = power_profiles::mode_for_start(
             self.state.scx.is_none(),
@@ -344,6 +360,10 @@ impl ScxLoader {
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        // Same guard as the mode-based start; see there.
+        if let Some(refusal) = start_refusal(self.state.scx.as_ref()) {
+            return Err(zbus::fdo::Error::Failed(refusal));
+        }
         log::info!("starting {scx_name:?} with args {scx_args:?}..");
 
         let spawn = self.mint_spawn();
@@ -1167,6 +1187,16 @@ mod tests {
             mode,
             args: args.map(|a| a.iter().map(ToString::to_string).collect()),
         }
+    }
+
+    /// An idle daemon lets a start through; a running one refuses and
+    /// points at `SwitchScheduler`.
+    #[test]
+    fn start_refused_while_running() {
+        assert_eq!(start_refusal(None), None);
+        let refusal = start_refusal(Some(&SupportedSched::Bpfland)).expect("must refuse");
+        assert!(refusal.contains("scx_bpfland"));
+        assert!(refusal.contains("SwitchScheduler"));
     }
 
     /// The backoff ladder is pinned: 100ms doubling to an 800ms ceiling,
