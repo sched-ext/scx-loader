@@ -117,6 +117,7 @@ impl ScxLoader {
             "scx_beerland",
             "scx_bpfland",
             "scx_cake",
+            "scx_cidland",
             "scx_cosmos",
             "scx_flash",
             "scx_flow",
