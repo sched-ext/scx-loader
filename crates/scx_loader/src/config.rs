@@ -113,6 +113,7 @@ pub fn get_default_config() -> Config {
         SupportedSched::MLFQ,
         SupportedSched::Cidland,
         SupportedSched::Chaos,
+        SupportedSched::Maestro,
     ];
     let scheds_map = HashMap::from(supported_scheds.map(init_default_config_entry));
     Config {
@@ -260,7 +261,8 @@ fn get_default_scx_flags_for_mode(
         | SupportedSched::Forge
         | SupportedSched::Cake
         | SupportedSched::MLFQ
-        | SupportedSched::Cidland => vec![],
+        | SupportedSched::Cidland
+        | SupportedSched::Maestro => vec![],
     }
 }
 
