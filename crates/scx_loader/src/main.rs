@@ -360,8 +360,12 @@ impl ScxLoader {
         scx_name: SupportedSched,
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
-        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        // The lock comes after authorization, so a polkit dialog never
+        // holds up other clients' reads. Every state-reading decision
+        // below sits under the lock and sees post-auth truth - the
+        // interactive wait is exactly the window state may move in.
+        let mut inner = self.inner.write().await;
         // A Start on a running daemon would mint a fresh claim the runner
         // then refuses to honor - and the guarded death notice would even
         // protect that wrong claim. Refuse up front; the runner's own
@@ -410,8 +414,12 @@ impl ScxLoader {
         scx_name: SupportedSched,
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
-        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        // The lock comes after authorization, so a polkit dialog never
+        // holds up other clients' reads. Every state-reading decision
+        // below sits under the lock and sees post-auth truth - the
+        // interactive wait is exactly the window state may move in.
+        let mut inner = self.inner.write().await;
         // Same guard as the mode-based start; see there.
         if let Some(refusal) = start_refusal(inner.sched.scx.as_ref()) {
             return Err(zbus::fdo::Error::Failed(refusal));
@@ -447,8 +455,12 @@ impl ScxLoader {
         scx_name: SupportedSched,
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
-        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        // The lock comes after authorization, so a polkit dialog never
+        // holds up other clients' reads. Every state-reading decision
+        // below sits under the lock and sees post-auth truth - the
+        // interactive wait is exactly the window state may move in.
+        let mut inner = self.inner.write().await;
 
         // A switch while nothing runs is a start in disguise; on a running
         // scheduler it is an explicit user decision — passed through.
@@ -492,8 +504,9 @@ impl ScxLoader {
         scx_name: SupportedSched,
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
-        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        // Lock after authorization; see start_scheduler.
+        let mut inner = self.inner.write().await;
         log::info!("switching {scx_name:?} with args {scx_args:?}..");
 
         let spawn = inner.mint_spawn();
@@ -523,8 +536,12 @@ impl ScxLoader {
         #[zbus(header)] hdr: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
-        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        // The lock comes after authorization, so a polkit dialog never
+        // holds up other clients' reads. Every state-reading decision
+        // below sits under the lock and sees post-auth truth - the
+        // interactive wait is exactly the window state may move in.
+        let mut inner = self.inner.write().await;
         if let Some(current_scx) = inner.sched.scx.clone() {
             let scx_name: &str = current_scx.into();
 
@@ -552,8 +569,12 @@ impl ScxLoader {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<()> {
-        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        // The lock comes after authorization, so a polkit dialog never
+        // holds up other clients' reads. Every state-reading decision
+        // below sits under the lock and sees post-auth truth - the
+        // interactive wait is exactly the window state may move in.
+        let mut inner = self.inner.write().await;
         if let Some(current_scx) = inner.sched.scx.clone() {
             let scx_name: &str = current_scx.clone().into();
 
@@ -582,8 +603,12 @@ impl ScxLoader {
         #[zbus(header)] hdr: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
-        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
+        // The lock comes after authorization, so a polkit dialog never
+        // holds up other clients' reads. Every state-reading decision
+        // below sits under the lock and sees post-auth truth - the
+        // interactive wait is exactly the window state may move in.
+        let mut inner = self.inner.write().await;
 
         if let Some(default_scx) = self.default_sched.clone() {
             let scx_name: &str = default_scx.clone().into();
