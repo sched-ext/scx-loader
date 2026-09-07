@@ -42,6 +42,36 @@ use zbus_polkit::policykit1::{AuthorityProxy, CheckAuthorizationFlags, Subject};
 /// which spawn it is about.
 type SpawnId = u64;
 
+/// Why the child is gone for good; the cancel path never produces one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ChildEnd {
+    /// Exited zero on its own - deliberate, never respawned.
+    CleanExit,
+    /// Crashed or kept failing until the respawn budget ran out.
+    Failed,
+}
+
+/// Final death of one spawn, reported by the runner to the reaper.
+#[derive(Debug, Clone, Copy)]
+struct DeathNotice {
+    spawn: SpawnId,
+    end: ChildEnd,
+}
+
+/// `None` means no final exit status was available: the child never
+/// spawned, or the runner task itself failed.
+fn classify_end(status: Option<ExitStatus>) -> ChildEnd {
+    match status {
+        Some(status) if status.success() => ChildEnd::CleanExit,
+        _ => ChildEnd::Failed,
+    }
+}
+
+/// A late notice must never clobber a newer claim.
+fn death_is_current(current: Option<SpawnId>, dead: SpawnId) -> bool {
+    current == Some(dead)
+}
+
 #[derive(Debug, PartialEq)]
 enum ScxMessage {
     /// Quit the `scx_loader`
@@ -710,20 +740,61 @@ async fn main() -> Result<()> {
         None
     };
 
+    let death_tx = spawn_reaper(&connection).await?;
+
     // run worker/receiver loop
-    worker_loop(config, rx).await?;
+    worker_loop(config, rx, death_tx).await?;
 
     Ok(())
+}
+
+/// The reaper: a final child death becomes the same transition and
+/// emission a Stop would have produced, guarded by the spawn identity.
+async fn spawn_reaper(connection: &Connection) -> Result<UnboundedSender<DeathNotice>> {
+    let (death_tx, mut death_rx) = tokio::sync::mpsc::unbounded_channel::<DeathNotice>();
+    let iface_ref = connection
+        .object_server()
+        .interface::<_, ScxLoader>("/org/scx/Loader")
+        .await?;
+    tokio::spawn(async move {
+        while let Some(notice) = death_rx.recv().await {
+            let mut iface = iface_ref.get_mut().await;
+            if !death_is_current(iface.current_spawn, notice.spawn) {
+                log::debug!("stale death notice for spawn {}; ignoring", notice.spawn);
+                continue;
+            }
+            log::info!(
+                "reaping spawn {} ({:?}); resetting state",
+                notice.spawn,
+                notice.end
+            );
+            iface.current_spawn = None;
+            iface
+                .apply_and_signal(
+                    iface_ref.signal_emitter(),
+                    SchedState {
+                        scx: None,
+                        // Same contract as Stop: Auto when nothing runs.
+                        mode: SchedMode::Auto,
+                        args: None,
+                    },
+                )
+                .await;
+        }
+    });
+    Ok(death_tx)
 }
 
 async fn worker_loop(
     config: config::Config,
     mut receiver: UnboundedReceiver<ScxMessage>,
+    death_tx: UnboundedSender<DeathNotice>,
 ) -> Result<()> {
     // setup channel for scheduler runner
     let (runner_tx, runner_rx) = tokio::sync::mpsc::channel::<RunnerMessage>(1);
 
-    let run_sched_future = tokio::spawn(async move { handle_child_process(runner_rx).await });
+    let run_sched_future =
+        tokio::spawn(async move { handle_child_process(runner_rx, death_tx).await });
 
     // prepare future for tokio
     tokio::pin!(run_sched_future);
@@ -830,7 +901,10 @@ async fn worker_loop(
 /// The retry task's handle; resolves only when the child is gone for good.
 type RunnerTask = tokio::task::JoinHandle<Result<Option<ExitStatus>>>;
 
-async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>) -> Result<()> {
+async fn handle_child_process(
+    mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>,
+    death_tx: UnboundedSender<DeathNotice>,
+) -> Result<()> {
     let mut task: Option<(SpawnId, RunnerTask)> = None;
     let mut cancel_token = Arc::new(tokio_util::sync::CancellationToken::new());
 
@@ -850,8 +924,24 @@ async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>
                     None => std::future::pending().await,
                 }
             } => {
-                task = None;
-                log::warn!("scheduler task ended on its own: {end:?}");
+                let (spawn, _) = task.take().expect("a completion implies a task");
+                let status = match end {
+                    Ok(Ok(status)) => status,
+                    other => {
+                        log::error!("scheduler task failed: {other:?}");
+                        None
+                    }
+                };
+                let end = classify_end(status);
+                match end {
+                    ChildEnd::CleanExit => {
+                        log::warn!("scheduler exited on its own; reporting it gone");
+                    }
+                    ChildEnd::Failed => {
+                        log::error!("scheduler is gone after exhausting its respawn budget");
+                    }
+                }
+                let _ = death_tx.send(DeathNotice { spawn, end });
                 continue;
             }
         };
@@ -1114,6 +1204,37 @@ mod tests {
                 mode: false,
                 args: true
             }
+        );
+        // The reaper's reset is the Stop transition reached without a
+        // Stop; the two rows above are its rows too.
+    }
+
+    /// The runner's verdict on a final exit status, pinned per path:
+    /// clean zero is a deliberate exit, everything else - a nonzero code,
+    /// a signal, or a child that never spawned - is a failure.
+    #[test]
+    fn child_end_classification() {
+        use std::os::unix::process::ExitStatusExt;
+        let by_code = |code: i32| Some(ExitStatus::from_raw(code << 8));
+        assert_eq!(classify_end(by_code(0)), ChildEnd::CleanExit);
+        assert_eq!(classify_end(by_code(1)), ChildEnd::Failed);
+        // Raw status 9: killed by SIGKILL.
+        assert_eq!(
+            classify_end(Some(ExitStatus::from_raw(9))),
+            ChildEnd::Failed
+        );
+        assert_eq!(classify_end(None), ChildEnd::Failed);
+    }
+
+    /// A notice acts only on the exact claim it is about: a newer spawn,
+    /// an idle daemon, or a replayed notice all leave the state alone.
+    #[test]
+    fn death_notice_guard() {
+        assert!(death_is_current(Some(7), 7));
+        assert!(!death_is_current(Some(8), 7), "newer claim wins");
+        assert!(
+            !death_is_current(None, 7),
+            "idle daemon has no claim to reset"
         );
     }
 
