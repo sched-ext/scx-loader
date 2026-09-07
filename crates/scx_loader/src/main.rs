@@ -38,6 +38,10 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::Value;
 use zbus_polkit::policykit1::{AuthorityProxy, CheckAuthorizationFlags, Subject};
 
+/// Identity of one child spawn; a late death notice must be able to say
+/// which spawn it is about.
+type SpawnId = u64;
+
 #[derive(Debug, PartialEq)]
 enum ScxMessage {
     /// Quit the `scx_loader`
@@ -45,27 +49,27 @@ enum ScxMessage {
     /// Stop the scheduler, if any
     StopSched,
     /// Start the scheduler with the given mode
-    StartSched((SupportedSched, SchedMode)),
+    StartSched((SupportedSched, SchedMode, SpawnId)),
     /// Start the scheduler with the given scx arguments
-    StartSchedArgs((SupportedSched, Vec<String>)),
+    StartSchedArgs((SupportedSched, Vec<String>, SpawnId)),
     /// Switch to another scheduler with the given mode
-    SwitchSched((SupportedSched, SchedMode)),
+    SwitchSched((SupportedSched, SchedMode, SpawnId)),
     /// Switch to another scheduler with the given scx arguments
-    SwitchSchedArgs((SupportedSched, Vec<String>)),
+    SwitchSchedArgs((SupportedSched, Vec<String>, SpawnId)),
     /// Restart the currently running scheduler with original configuration
-    RestartSched((SupportedSched, Option<Vec<String>>, SchedMode)),
+    RestartSched((SupportedSched, Option<Vec<String>>, SchedMode, SpawnId)),
 }
 
 #[derive(Debug, PartialEq)]
 enum RunnerMessage {
     /// Switch to another scheduler with the given scx arguments
-    Switch((SupportedSched, Vec<String>)),
+    Switch((SupportedSched, Vec<String>, SpawnId)),
     /// Start the scheduler with the given scx arguments
-    Start((SupportedSched, Vec<String>)),
+    Start((SupportedSched, Vec<String>, SpawnId)),
     /// Stop the scheduler, if any
     Stop,
     /// Restart the currently running scheduler with same arguments
-    Restart((SupportedSched, Vec<String>)),
+    Restart((SupportedSched, Vec<String>, SpawnId)),
 }
 
 /// The three mutable properties of `org.scx.Loader` as one value.
@@ -138,6 +142,10 @@ struct ScxLoader {
     // Mode mapped from PPD's active profile (see
     // `power_profiles::mode_for_start`).
     ppd_mapping: power_profiles::ActiveMapping,
+    /// Monotonic mint for [`SpawnId`]s.
+    next_spawn: SpawnId,
+    /// Spawn the current running claim corresponds to; `None` when idle.
+    current_spawn: Option<SpawnId>,
 }
 
 #[derive(Parser, Debug)]
@@ -256,9 +264,12 @@ impl ScxLoader {
         }
         log::info!("starting {scx_name:?} with mode {effective_mode:?}..");
 
-        let _ = self
-            .channel
-            .send(ScxMessage::StartSched((scx_name.clone(), effective_mode)));
+        let spawn = self.mint_spawn();
+        let _ = self.channel.send(ScxMessage::StartSched((
+            scx_name.clone(),
+            effective_mode,
+            spawn,
+        )));
         self.apply_and_signal(
             &emitter,
             SchedState {
@@ -283,9 +294,11 @@ impl ScxLoader {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         log::info!("starting {scx_name:?} with args {scx_args:?}..");
 
+        let spawn = self.mint_spawn();
         let _ = self.channel.send(ScxMessage::StartSchedArgs((
             scx_name.clone(),
             scx_args.clone(),
+            spawn,
         )));
         self.apply_and_signal(
             &emitter,
@@ -325,9 +338,12 @@ impl ScxLoader {
         }
         log::info!("switching {scx_name:?} with mode {effective_mode:?}..");
 
-        let _ = self
-            .channel
-            .send(ScxMessage::SwitchSched((scx_name.clone(), effective_mode)));
+        let spawn = self.mint_spawn();
+        let _ = self.channel.send(ScxMessage::SwitchSched((
+            scx_name.clone(),
+            effective_mode,
+            spawn,
+        )));
         self.apply_and_signal(
             &emitter,
             SchedState {
@@ -352,9 +368,11 @@ impl ScxLoader {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         log::info!("switching {scx_name:?} with args {scx_args:?}..");
 
+        let spawn = self.mint_spawn();
         let _ = self.channel.send(ScxMessage::SwitchSchedArgs((
             scx_name.clone(),
             scx_args.clone(),
+            spawn,
         )));
         self.apply_and_signal(
             &emitter,
@@ -381,6 +399,7 @@ impl ScxLoader {
             let scx_name: &str = current_scx.into();
 
             log::info!("stopping {scx_name:?}..");
+            self.current_spawn = None;
             let _ = self.channel.send(ScxMessage::StopSched);
             self.apply_and_signal(
                 &emitter,
@@ -403,14 +422,17 @@ impl ScxLoader {
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
-        if let Some(current_scx) = &self.state.scx {
+        if let Some(current_scx) = self.state.scx.clone() {
             let scx_name: &str = current_scx.clone().into();
 
             log::info!("restarting {scx_name:?}..");
+            // A restart replaces the child: same claim, new identity.
+            let spawn = self.mint_spawn();
             let _ = self.channel.send(ScxMessage::RestartSched((
                 current_scx.clone(),
                 self.state.args.clone(),
                 self.state.mode,
+                spawn,
             )));
 
             Ok(())
@@ -437,9 +459,11 @@ impl ScxLoader {
                 self.default_mode
             );
 
+            let spawn = self.mint_spawn();
             let _ = self.channel.send(ScxMessage::SwitchSched((
                 default_scx.clone(),
                 self.default_mode,
+                spawn,
             )));
             let mode = self.default_mode;
             self.apply_and_signal(
@@ -463,6 +487,13 @@ impl ScxLoader {
 
 /// Non-D-Bus helpers; anything inside `#[interface]` becomes a D-Bus member.
 impl ScxLoader {
+    /// A fresh identity for the child this transition creates.
+    fn mint_spawn(&mut self) -> SpawnId {
+        self.next_spawn += 1;
+        self.current_spawn = Some(self.next_spawn);
+        self.next_spawn
+    }
+
     /// Assigns `new`, best-effort emits one `PropertiesChanged` for the diff.
     async fn apply_and_signal(&mut self, emitter: &SignalEmitter<'_>, new: SchedState) {
         let changed = self.state.diff(&new);
@@ -621,6 +652,8 @@ async fn main() -> Result<()> {
                 default_mode: config.default_mode.unwrap_or(SchedMode::Auto),
                 config: config.clone(),
                 ppd_mapping: ppd_mapping.clone(),
+                next_spawn: 0,
+                current_spawn: None,
             },
         )
         .await?;
@@ -720,7 +753,7 @@ async fn worker_loop(
                 // send stop message to the runner
                 runner_tx.send(RunnerMessage::Stop).await?;
             }
-            ScxMessage::StartSched((scx_sched, sched_mode)) => {
+            ScxMessage::StartSched((scx_sched, sched_mode, spawn)) => {
                 log::info!("Got event to start scheduler!");
 
                 // get scheduler args for the mode
@@ -733,18 +766,18 @@ async fn worker_loop(
 
                 // send message with scheduler and asociated args to the runner
                 runner_tx
-                    .send(RunnerMessage::Start((scx_sched, args)))
+                    .send(RunnerMessage::Start((scx_sched, args, spawn)))
                     .await?;
             }
-            ScxMessage::StartSchedArgs((scx_sched, sched_args)) => {
+            ScxMessage::StartSchedArgs((scx_sched, sched_args, spawn)) => {
                 log::info!("Got event to start scheduler with args!");
 
                 // send message with scheduler and asociated args to the runner
                 runner_tx
-                    .send(RunnerMessage::Start((scx_sched, sched_args)))
+                    .send(RunnerMessage::Start((scx_sched, sched_args, spawn)))
                     .await?;
             }
-            ScxMessage::SwitchSched((scx_sched, sched_mode)) => {
+            ScxMessage::SwitchSched((scx_sched, sched_mode, spawn)) => {
                 log::info!("Got event to switch scheduler!");
 
                 // get scheduler args for the mode
@@ -757,18 +790,18 @@ async fn worker_loop(
 
                 // send message with scheduler and asociated args to the runner
                 runner_tx
-                    .send(RunnerMessage::Switch((scx_sched, args)))
+                    .send(RunnerMessage::Switch((scx_sched, args, spawn)))
                     .await?;
             }
-            ScxMessage::SwitchSchedArgs((scx_sched, sched_args)) => {
+            ScxMessage::SwitchSchedArgs((scx_sched, sched_args, spawn)) => {
                 log::info!("Got event to switch scheduler with args!");
 
                 // send message with scheduler and asociated args to the runner
                 runner_tx
-                    .send(RunnerMessage::Switch((scx_sched, sched_args)))
+                    .send(RunnerMessage::Switch((scx_sched, sched_args, spawn)))
                     .await?;
             }
-            ScxMessage::RestartSched((scx_sched, current_args, current_mode)) => {
+            ScxMessage::RestartSched((scx_sched, current_args, current_mode, spawn)) => {
                 log::info!("Got event to restart scheduler!");
 
                 // Determine the arguments to use for restart
@@ -787,15 +820,18 @@ async fn worker_loop(
 
                 // send restart message to the runner
                 runner_tx
-                    .send(RunnerMessage::Restart((scx_sched, args)))
+                    .send(RunnerMessage::Restart((scx_sched, args, spawn)))
                     .await?;
             }
         }
     }
 }
 
+/// The retry task's handle; resolves only when the child is gone for good.
+type RunnerTask = tokio::task::JoinHandle<Result<Option<ExitStatus>>>;
+
 async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>) -> Result<()> {
-    let mut task: Option<tokio::task::JoinHandle<Result<Option<ExitStatus>>>> = None;
+    let mut task: Option<(SpawnId, RunnerTask)> = None;
     let mut cancel_token = Arc::new(tokio_util::sync::CancellationToken::new());
 
     loop {
@@ -810,7 +846,7 @@ async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>
             // it, so it can never land here.
             end = async {
                 match task.as_mut() {
-                    Some(handle) => handle.await,
+                    Some((_, handle)) => handle.await,
                     None => std::future::pending().await,
                 }
             } => {
@@ -820,16 +856,16 @@ async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>
             }
         };
         match message {
-            RunnerMessage::Switch((scx_sched, sched_args)) => {
+            RunnerMessage::Switch((scx_sched, sched_args, spawn)) => {
                 // stop the sched if its running
                 stop_scheduler(&mut task, &mut cancel_token).await;
 
                 // overwise start scheduler
                 let handle = start_scheduler(scx_sched, sched_args, cancel_token.clone());
-                task = Some(handle);
+                task = Some((spawn, handle));
                 log::debug!("Scheduler started");
             }
-            RunnerMessage::Start((scx_sched, sched_args)) => {
+            RunnerMessage::Start((scx_sched, sched_args, spawn)) => {
                 // check if sched is running or not
                 if task.is_some() {
                     log::error!("Scheduler wasn't finished yet. Stop already running scheduler!");
@@ -837,13 +873,13 @@ async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>
                 }
                 // overwise start scheduler
                 let handle = start_scheduler(scx_sched, sched_args, cancel_token.clone());
-                task = Some(handle);
+                task = Some((spawn, handle));
                 log::debug!("Scheduler started");
             }
             RunnerMessage::Stop => {
                 stop_scheduler(&mut task, &mut cancel_token).await;
             }
-            RunnerMessage::Restart((scx_sched, sched_args)) => {
+            RunnerMessage::Restart((scx_sched, sched_args, spawn)) => {
                 log::info!("Got event to restart scheduler!");
 
                 // stop the sched if its running
@@ -851,7 +887,7 @@ async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>
 
                 // restart scheduler with the same configuration
                 let handle = start_scheduler(scx_sched, sched_args, cancel_token.clone());
-                task = Some(handle);
+                task = Some((spawn, handle));
                 log::debug!("Scheduler restarted");
             }
         }
@@ -940,10 +976,10 @@ fn spawn_scheduler(scx_crate: SupportedSched, args: Vec<String>) -> Result<Child
 }
 
 async fn stop_scheduler(
-    task: &mut Option<tokio::task::JoinHandle<Result<Option<ExitStatus>>>>,
+    task: &mut Option<(SpawnId, RunnerTask)>,
     cancel_token: &mut Arc<tokio_util::sync::CancellationToken>,
 ) {
-    if let Some(task) = task.take() {
+    if let Some((_, task)) = task.take() {
         log::debug!("Stopping already running scheduler..");
         cancel_token.cancel();
         let status = task.await;
