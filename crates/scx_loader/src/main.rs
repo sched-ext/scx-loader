@@ -26,6 +26,7 @@ use clap::Parser;
 use sysinfo::System;
 use tokio::process::Child;
 use tokio::process::Command;
+use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Duration;
@@ -231,7 +232,9 @@ impl LoaderState {
 }
 
 struct ScxLoader {
-    inner: LoaderState,
+    /// The one lock every transition and every state read goes through;
+    /// method dispatch itself only needs the interface read lock.
+    inner: RwLock<LoaderState>,
     /// Unique per instance (the bus name); only its change is meaningful.
     generation: String,
     channel: UnboundedSender<ScxMessage>,
@@ -259,8 +262,8 @@ const ROOT_ACTION_ID: &str = "org.scx.loader.manage-schedulers";
 impl ScxLoader {
     /// Get currently running scheduler, in case non is running return "unknown"
     #[zbus(property)]
-    fn current_scheduler(&self) -> String {
-        if let Some(current_scx) = &self.inner.sched.scx {
+    async fn current_scheduler(&self) -> String {
+        if let Some(current_scx) = &self.inner.read().await.sched.scx {
             let current_scx: &str = current_scx.clone().into();
             log::debug!("called {current_scx:?}");
             current_scx.into()
@@ -271,14 +274,20 @@ impl ScxLoader {
 
     /// Get scheduler mode; `Auto` whenever no scheduler is active
     #[zbus(property)]
-    fn scheduler_mode(&self) -> SchedMode {
-        self.inner.sched.mode
+    async fn scheduler_mode(&self) -> SchedMode {
+        self.inner.read().await.sched.mode
     }
 
     /// Get arguments used for currently running scheduler
     #[zbus(property)]
-    fn current_scheduler_args(&self) -> Vec<String> {
-        self.inner.sched.args.clone().unwrap_or_default()
+    async fn current_scheduler_args(&self) -> Vec<String> {
+        self.inner
+            .read()
+            .await
+            .sched
+            .args
+            .clone()
+            .unwrap_or_default()
     }
 
     /// Not "const": the startup announcement is this property's change signal.
@@ -341,24 +350,25 @@ impl ScxLoader {
     }
 
     async fn start_scheduler(
-        &mut self,
+        &self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         scx_name: SupportedSched,
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
+        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         // A Start on a running daemon would mint a fresh claim the runner
         // then refuses to honor - and the guarded death notice would even
         // protect that wrong claim. Refuse up front; the runner's own
         // check stays as the last line of defense.
-        if let Some(refusal) = start_refusal(self.inner.sched.scx.as_ref()) {
+        if let Some(refusal) = start_refusal(inner.sched.scx.as_ref()) {
             return Err(zbus::fdo::Error::Failed(refusal));
         }
 
         let effective_mode = power_profiles::mode_for_start(
-            self.inner.sched.scx.is_none(),
+            inner.sched.scx.is_none(),
             self.ppd_mapping.get(),
             sched_mode,
         );
@@ -369,13 +379,13 @@ impl ScxLoader {
         }
         log::info!("starting {scx_name:?} with mode {effective_mode:?}..");
 
-        let spawn = self.inner.mint_spawn();
+        let spawn = inner.mint_spawn();
         let _ = self.channel.send(ScxMessage::StartSched((
             scx_name.clone(),
             effective_mode,
             spawn,
         )));
-        self.inner
+        inner
             .apply_and_signal(
                 &emitter,
                 SchedState {
@@ -390,27 +400,28 @@ impl ScxLoader {
     }
 
     async fn start_scheduler_with_args(
-        &mut self,
+        &self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         scx_name: SupportedSched,
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
+        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         // Same guard as the mode-based start; see there.
-        if let Some(refusal) = start_refusal(self.inner.sched.scx.as_ref()) {
+        if let Some(refusal) = start_refusal(inner.sched.scx.as_ref()) {
             return Err(zbus::fdo::Error::Failed(refusal));
         }
         log::info!("starting {scx_name:?} with args {scx_args:?}..");
 
-        let spawn = self.inner.mint_spawn();
+        let spawn = inner.mint_spawn();
         let _ = self.channel.send(ScxMessage::StartSchedArgs((
             scx_name.clone(),
             scx_args.clone(),
             spawn,
         )));
-        self.inner
+        inner
             .apply_and_signal(
                 &emitter,
                 SchedState {
@@ -426,19 +437,20 @@ impl ScxLoader {
     }
 
     async fn switch_scheduler(
-        &mut self,
+        &self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         scx_name: SupportedSched,
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
+        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
 
         // A switch while nothing runs is a start in disguise; on a running
         // scheduler it is an explicit user decision — passed through.
         let effective_mode = power_profiles::mode_for_start(
-            self.inner.sched.scx.is_none(),
+            inner.sched.scx.is_none(),
             self.ppd_mapping.get(),
             sched_mode,
         );
@@ -449,13 +461,13 @@ impl ScxLoader {
         }
         log::info!("switching {scx_name:?} with mode {effective_mode:?}..");
 
-        let spawn = self.inner.mint_spawn();
+        let spawn = inner.mint_spawn();
         let _ = self.channel.send(ScxMessage::SwitchSched((
             scx_name.clone(),
             effective_mode,
             spawn,
         )));
-        self.inner
+        inner
             .apply_and_signal(
                 &emitter,
                 SchedState {
@@ -470,23 +482,24 @@ impl ScxLoader {
     }
 
     async fn switch_scheduler_with_args(
-        &mut self,
+        &self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         scx_name: SupportedSched,
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
+        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         log::info!("switching {scx_name:?} with args {scx_args:?}..");
 
-        let spawn = self.inner.mint_spawn();
+        let spawn = inner.mint_spawn();
         let _ = self.channel.send(ScxMessage::SwitchSchedArgs((
             scx_name.clone(),
             scx_args.clone(),
             spawn,
         )));
-        self.inner
+        inner
             .apply_and_signal(
                 &emitter,
                 SchedState {
@@ -502,19 +515,20 @@ impl ScxLoader {
     }
 
     async fn stop_scheduler(
-        &mut self,
+        &self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
+        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
-        if let Some(current_scx) = self.inner.sched.scx.clone() {
+        if let Some(current_scx) = inner.sched.scx.clone() {
             let scx_name: &str = current_scx.into();
 
             log::info!("stopping {scx_name:?}..");
-            self.inner.current_spawn = None;
+            inner.current_spawn = None;
             let _ = self.channel.send(ScxMessage::StopSched);
-            self.inner
+            inner
                 .apply_and_signal(
                     &emitter,
                     SchedState {
@@ -531,21 +545,22 @@ impl ScxLoader {
     }
 
     async fn restart_scheduler(
-        &mut self,
+        &self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
     ) -> zbus::fdo::Result<()> {
+        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
-        if let Some(current_scx) = self.inner.sched.scx.clone() {
+        if let Some(current_scx) = inner.sched.scx.clone() {
             let scx_name: &str = current_scx.clone().into();
 
             log::info!("restarting {scx_name:?}..");
             // A restart replaces the child: same claim, new identity.
-            let spawn = self.inner.mint_spawn();
+            let spawn = inner.mint_spawn();
             let _ = self.channel.send(ScxMessage::RestartSched((
                 current_scx.clone(),
-                self.inner.sched.args.clone(),
-                self.inner.sched.mode,
+                inner.sched.args.clone(),
+                inner.sched.mode,
                 spawn,
             )));
 
@@ -559,11 +574,12 @@ impl ScxLoader {
 
     /// Restore the default scheduler configured in config file
     async fn restore_default(
-        &mut self,
+        &self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
+        let mut inner = self.inner.write().await;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
 
         if let Some(default_scx) = self.default_sched.clone() {
@@ -573,14 +589,14 @@ impl ScxLoader {
                 self.default_mode
             );
 
-            let spawn = self.inner.mint_spawn();
+            let spawn = inner.mint_spawn();
             let _ = self.channel.send(ScxMessage::SwitchSched((
                 default_scx.clone(),
                 self.default_mode,
                 spawn,
             )));
             let mode = self.default_mode;
-            self.inner
+            inner
                 .apply_and_signal(
                     &emitter,
                     SchedState {
@@ -724,7 +740,7 @@ async fn main() -> Result<()> {
         .at(
             "/org/scx/Loader",
             ScxLoader {
-                inner: LoaderState {
+                inner: RwLock::new(LoaderState {
                     sched: SchedState {
                         scx: None,
                         mode: SchedMode::Auto,
@@ -732,7 +748,7 @@ async fn main() -> Result<()> {
                     },
                     next_spawn: 0,
                     current_spawn: None,
-                },
+                }),
                 generation,
                 channel: channel.clone(),
                 default_sched: config.default_sched.clone(),
@@ -752,8 +768,11 @@ async fn main() -> Result<()> {
         .await?;
     {
         let iface = iface_ref.get().await;
-        let mut announcement: HashMap<_, _> =
-            iface.inner.sched.property_values().into_iter().collect();
+        // The inner lock now carries 0005's ordering guarantee: transitions
+        // emit under its write half, so emitting under the read half keeps
+        // the announcement strictly ordered against every transition.
+        let inner = iface.inner.read().await;
+        let mut announcement: HashMap<_, _> = inner.sched.property_values().into_iter().collect();
         // The generation makes a silent idle-to-idle replacement observable.
         announcement.insert("DaemonGeneration", Value::from(iface.generation.clone()));
         if let Err(err) = emit_properties_changed(iface_ref.signal_emitter(), announcement).await {
@@ -814,8 +833,9 @@ async fn spawn_reaper(connection: &Connection) -> Result<UnboundedSender<DeathNo
         .await?;
     tokio::spawn(async move {
         while let Some(notice) = death_rx.recv().await {
-            let mut iface = iface_ref.get_mut().await;
-            if !death_is_current(iface.inner.current_spawn, notice.spawn) {
+            let iface = iface_ref.get().await;
+            let mut inner = iface.inner.write().await;
+            if !death_is_current(inner.current_spawn, notice.spawn) {
                 log::debug!("stale death notice for spawn {}; ignoring", notice.spawn);
                 continue;
             }
@@ -824,9 +844,8 @@ async fn spawn_reaper(connection: &Connection) -> Result<UnboundedSender<DeathNo
                 notice.spawn,
                 notice.end
             );
-            iface.inner.current_spawn = None;
-            iface
-                .inner
+            inner.current_spawn = None;
+            inner
                 .apply_and_signal(
                     iface_ref.signal_emitter(),
                     SchedState {
