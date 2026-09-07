@@ -16,6 +16,7 @@
 
         The name of the currently running scheduler. If no scheduler is active,
         this property will be set to "unknown". Changes are signalled.
+        A scheduler that exits for good is reflected by a property change.
     -->
     <property name="CurrentScheduler" type="s" access="read">
       <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>

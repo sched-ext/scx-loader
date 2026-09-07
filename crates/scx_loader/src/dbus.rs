@@ -60,6 +60,7 @@ pub trait LoaderClient {
     /// The name of the currently running scheduler. If no scheduler is active,
     /// this property will be set to "unknown". Changes are signalled;
     /// older daemons don't emit — keep a fallback poll.
+    /// A scheduler that exits for good is reflected here as "unknown".
     #[zbus(property)]
     fn current_scheduler(&self) -> zbus::Result<String>;
 
