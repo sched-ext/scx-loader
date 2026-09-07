@@ -72,6 +72,28 @@ fn death_is_current(current: Option<SpawnId>, dead: SpawnId) -> bool {
     current == Some(dead)
 }
 
+/// A child that survived this long earned its respawn budget back.
+const RESPAWN_RENEWAL: Duration = Duration::from_secs(10);
+
+/// Ceiling on consecutive failures before the runner gives up.
+const MAX_RESPAWN_FAILURES: u32 = 5;
+
+/// 100ms doubling to an 800ms ceiling: enough to outlive a transient,
+/// too short to look like a hang. The loop sleeps only between attempts,
+/// so exactly the first four rungs are ever used.
+fn respawn_backoff(failures: u32) -> Duration {
+    Duration::from_millis(100 << failures.saturating_sub(1).min(3))
+}
+
+/// Consecutive-failure count going into the next attempt.
+fn failures_after(ran_for: Duration, failures: u32) -> u32 {
+    if ran_for >= RESPAWN_RENEWAL {
+        1
+    } else {
+        failures + 1
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum ScxMessage {
     /// Quit the `scx_loader`
@@ -997,13 +1019,13 @@ fn start_scheduler(
 ) -> tokio::task::JoinHandle<Result<Option<ExitStatus>>> {
     // Ensure the child process exit is handled correctly in the runtime
     tokio::spawn(async move {
-        let mut retries = 0u32;
-        let max_retries = 5u32;
+        let mut failures = 0u32;
 
         let mut last_status: Option<ExitStatus> = None;
 
-        while retries < max_retries {
+        loop {
             let child = spawn_scheduler(scx_crate.clone(), args.clone());
+            let started = Instant::now();
 
             let mut failed = false;
             if let Ok(mut child) = child {
@@ -1041,8 +1063,26 @@ fn start_scheduler(
                 break;
             }
 
-            retries += 1;
-            log::error!("Failed to start scheduler (attempt {retries}/{max_retries})");
+            // Only consecutive failures count against the budget: a run
+            // past the renewal threshold starts the count over.
+            failures = failures_after(started.elapsed(), failures);
+            if failures >= MAX_RESPAWN_FAILURES {
+                log::error!(
+                    "Failed to start scheduler (attempt {failures}/{MAX_RESPAWN_FAILURES}); giving up"
+                );
+                break;
+            }
+            let delay = respawn_backoff(failures);
+            log::error!(
+                "Failed to start scheduler (attempt {failures}/{MAX_RESPAWN_FAILURES}); retrying in {delay:?}"
+            );
+            // Respawn is invisible on the bus by design: the managed-scheduler
+            // claim does not change through it. The backoff races cancellation
+            // so a stop is never delayed by it.
+            tokio::select! {
+                () = tokio::time::sleep(delay) => {}
+                () = cancel_token.cancelled() => break,
+            }
         }
 
         Ok(last_status)
@@ -1130,6 +1170,30 @@ mod tests {
             mode,
             args: args.map(|a| a.iter().map(ToString::to_string).collect()),
         }
+    }
+
+    /// The backoff ladder is pinned: 100ms doubling to an 800ms ceiling,
+    /// and the gaps the loop actually sleeps - between five attempts there
+    /// are four - add up to 1.5s end to end.
+    #[test]
+    fn respawn_backoff_ladder() {
+        let ladder: Vec<u128> = (1..=6).map(|n| respawn_backoff(n).as_millis()).collect();
+        assert_eq!(ladder, [100, 200, 400, 800, 800, 800]);
+        let slept: Duration = (1..MAX_RESPAWN_FAILURES).map(respawn_backoff).sum();
+        assert_eq!(slept, Duration::from_millis(1500));
+    }
+
+    /// Only consecutive failures count: a child that ran past the renewal
+    /// threshold starts the count over at one.
+    #[test]
+    fn respawn_budget_renewal() {
+        assert_eq!(failures_after(Duration::from_millis(5), 0), 1);
+        assert_eq!(failures_after(Duration::from_millis(5), 3), 4);
+        assert_eq!(
+            failures_after(RESPAWN_RENEWAL, 4),
+            1,
+            "a healthy run renews the budget"
+        );
     }
 
     /// One row per state-moving method.
