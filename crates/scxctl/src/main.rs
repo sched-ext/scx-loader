@@ -187,9 +187,17 @@ fn read_loader_snapshot(scx_loader: &LoaderClientProxyBlocking) -> Option<Loader
         .ok()?
         .build()
         .ok()?;
-    let mut props = properties
-        .get_all(InterfaceName::try_from("org.scx.Loader").ok()?)
-        .ok()?;
+    let iface = InterfaceName::try_from("org.scx.Loader").ok()?;
+    // Read until two consecutive answers agree; see scxtui's status() for
+    // the rationale. Capped disagreement fails open with the last answer.
+    let mut props = properties.get_all(iface.clone()).ok()?;
+    for _ in 0..2 {
+        let again = properties.get_all(iface.clone()).ok()?;
+        if again == props {
+            break;
+        }
+        props = again;
+    }
     Some(LoaderSnapshot {
         scheduler: String::try_from(props.remove("CurrentScheduler")?).ok()?,
         mode: SchedMode::try_from(props.remove("SchedulerMode")?).ok()?,

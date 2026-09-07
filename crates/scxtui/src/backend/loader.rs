@@ -210,14 +210,29 @@ impl SchedulerBackend for LoaderBackend {
             .map(|owner| owner.to_string())
     }
 
-    /// One `GetAll` bypassing the proxy cache: the authoritative read must see the daemon.
+    /// `GetAll` bypassing the proxy cache: the authoritative read must see the daemon.
+    /// Read until two consecutive answers agree: the daemon serves properties
+    /// individually, so one `GetAll` racing a transition can mix two states.
+    /// A capped disagreement fails open with the last answer - the next poll
+    /// corrects it, and a possibly-torn snapshot beats none.
     fn status(&self) -> Result<Status> {
         let iface = InterfaceName::from_static_str(SERVICE).expect("valid interface literal");
         let mut props = self
             .props
-            .get_all(iface)
+            .get_all(iface.clone())
             .map_err(|err| anyhow!("{err}"))
             .context("GetAll on org.scx.Loader failed")?;
+        for _ in 0..2 {
+            let again = self
+                .props
+                .get_all(iface.clone())
+                .map_err(|err| anyhow!("{err}"))
+                .context("GetAll on org.scx.Loader failed")?;
+            if again == props {
+                break;
+            }
+            props = again;
+        }
         Ok(Status {
             current: none_if_unknown(take_prop::<String>(&mut props, "CurrentScheduler")?),
             mode: take_prop(&mut props, "SchedulerMode")?,
