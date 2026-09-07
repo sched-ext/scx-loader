@@ -112,6 +112,7 @@ pub fn get_default_config() -> Config {
         SupportedSched::Forge,
         SupportedSched::MLFQ,
         SupportedSched::Cidland,
+        SupportedSched::Chaos,
     ];
     let scheds_map = HashMap::from(supported_scheds.map(init_default_config_entry));
     Config {
@@ -229,7 +230,7 @@ fn get_default_scx_flags_for_mode(
             ],
             SchedMode::Auto => vec!["--autopilot", "--pinned-slice-us", "500"],
         },
-        SupportedSched::P2DQ => match sched_mode {
+        SupportedSched::P2DQ | SupportedSched::Chaos => match sched_mode {
             SchedMode::Gaming => vec!["--task-slice", "true", "-f", "--sched-mode", "performance"],
             SchedMode::LowLatency => vec!["-y", "-f", "--task-slice", "true"],
             SchedMode::PowerSave => vec!["--sched-mode", "efficiency"],
