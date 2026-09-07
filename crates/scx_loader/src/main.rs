@@ -798,7 +798,27 @@ async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>
     let mut task: Option<tokio::task::JoinHandle<Result<Option<ExitStatus>>>> = None;
     let mut cancel_token = Arc::new(tokio_util::sync::CancellationToken::new());
 
-    while let Some(message) = rx.recv().await {
+    loop {
+        let message = tokio::select! {
+            message = rx.recv() => match message {
+                Some(message) => message,
+                None => break,
+            },
+            // A completion the daemon did not ask for: the child is gone
+            // for good. Free the slot so later starts are not refused by a
+            // corpse; the cancel path takes the task out before awaiting
+            // it, so it can never land here.
+            end = async {
+                match task.as_mut() {
+                    Some(handle) => handle.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                task = None;
+                log::warn!("scheduler task ended on its own: {end:?}");
+                continue;
+            }
+        };
         match message {
             RunnerMessage::Switch((scx_sched, sched_args)) => {
                 // stop the sched if its running
