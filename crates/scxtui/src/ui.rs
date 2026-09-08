@@ -116,7 +116,7 @@ fn draw_status_panel(frame: &mut Frame, app: &App, area: Rect) {
                 // Fail-open verdict: no annotation until the mode table is known.
                 if !app.running_mode_configured() {
                     lines.push(Line::from(Span::styled(
-                        "  no configured arguments for this mode — scheduler defaults in use",
+                        "  no configured arguments — scheduler defaults in effect",
                         Style::default().fg(Color::DarkGray),
                     )));
                 }
