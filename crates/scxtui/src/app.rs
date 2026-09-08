@@ -1358,6 +1358,32 @@ mod tests {
     }
 
     #[test]
+    fn pushed_movement_also_feeds_the_annotation() {
+        let mut backend = StubBackend::new();
+        backend
+            .modes
+            .insert("scx_cake".into(), vec![(SchedMode::Gaming, Vec::new())]);
+        let cached = Rc::clone(&backend.cached);
+        let truth = Rc::clone(&backend.truth);
+        let token = Rc::clone(&backend.token);
+        let mut app = app_with_backend(backend);
+
+        *token.borrow_mut() = Some("owner-1".into());
+        *cached.borrow_mut() = Some(idle_status());
+        // The first read primes the doorbell, it does not ring it.
+        app.apply_pushed_status();
+        let gaming = Status {
+            mode: SchedMode::Gaming,
+            ..running_status("scx_cake")
+        };
+        *truth.borrow_mut() = gaming.clone();
+        *cached.borrow_mut() = Some(gaming);
+        // The ring's authoritative refresh must also feed the annotation.
+        app.apply_pushed_status();
+        assert!(!app.running_mode_configured());
+    }
+
+    #[test]
     fn refresh_status_fetches_the_running_scheduler_past_the_selection() {
         // Selection stays elsewhere; the status refresh itself must feed
         // the annotation - through the real entry point, so removing the
