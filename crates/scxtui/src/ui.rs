@@ -113,6 +113,13 @@ fn draw_status_panel(frame: &mut Frame, app: &App, area: Rect) {
                 lines.push(kv("State", "running", Color::Green));
                 lines.push(kv("Scheduler", strip_prefix(sched), Color::White));
                 lines.push(kv("Mode", mode_name(status.mode), Color::White));
+                // Fail-open verdict: no annotation until the mode table is known.
+                if !app.running_mode_configured() {
+                    lines.push(Line::from(Span::styled(
+                        "  no configured arguments for this mode — scheduler defaults in use",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
             }
             None => lines.push(kv("State", "no scheduler running", Color::Yellow)),
         },
