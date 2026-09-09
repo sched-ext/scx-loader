@@ -151,6 +151,11 @@ pub struct Message {
     shown_at: Instant,
 }
 
+/// A remembered mode-table failure is retried after this long: a transient
+/// D-Bus hiccup heals on its own within it, while a daemon that cannot
+/// answer at all is asked once per cooldown instead of every poll.
+const MODE_ARGS_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
+
 pub struct App {
     backend: Box<dyn SchedulerBackend>,
     backend_kind: BackendKind,
@@ -167,8 +172,12 @@ pub struct App {
     /// for the lifetime of one daemon instance; see
     /// [`Self::check_daemon_instance`].
     mode_args: HashMap<String, ModeArgs>,
+    /// Schedulers whose mode-table query failed, with the failure time.
+    /// Retried after [`MODE_ARGS_RETRY_COOLDOWN`], or immediately when the
+    /// caches reset (instance change, manual 'R', backend switch).
+    mode_args_failed: HashMap<String, Instant>,
     /// Last observed backend instance token; a change invalidates
-    /// `mode_args`.
+    /// the mode cache.
     daemon_instance: Option<String>,
     /// Custom-arguments field; `Some` while the user is typing. While
     /// open it owns every key press.
@@ -206,6 +215,7 @@ impl App {
             status: None,
             kernel: None,
             mode_args: HashMap::new(),
+            mode_args_failed: HashMap::new(),
             daemon_instance: None,
             args_input: None,
             message: None,
@@ -273,6 +283,28 @@ impl App {
             return true;
         };
         modes.iter().any(|(m, args)| *m == mode && !args.is_empty())
+    }
+
+    /// [`Self::selected_mode_configured`]'s verdict, keyed on the running
+    /// status instead of the selection. Same fail-open rules; custom
+    /// arguments make the question inapplicable, which reads as `true`.
+    pub fn running_mode_configured(&self) -> bool {
+        let Some(status) = &self.status else {
+            return true;
+        };
+        if !status.args.is_empty() || status.mode == SchedMode::Auto {
+            return true;
+        }
+        let Some(modes) = status
+            .current
+            .as_deref()
+            .and_then(|sched| self.mode_args.get(sched))
+        else {
+            return true;
+        };
+        modes
+            .iter()
+            .any(|(m, args)| *m == status.mode && !args.is_empty())
     }
 
     pub fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
@@ -503,8 +535,9 @@ press Esc and use Enter instead",
                 self.refresh_status();
                 // Manual refresh means "give me the current truth", so the
                 // lazy cache must not satisfy it with old answers.
-                self.mode_args.clear();
+                self.clear_mode_cache();
                 self.refresh_modes();
+                self.ensure_running_modes();
                 if list_ok {
                     self.info("refreshed");
                 }
@@ -557,7 +590,7 @@ press Esc and use Enter instead",
                 // Instance tokens are per-backend; comparing across
                 // backends would be meaningless, so both the cache and the
                 // observed token start over.
-                self.mode_args.clear();
+                self.clear_mode_cache();
                 self.daemon_instance = None;
                 self.refresh_status();
                 self.sync_selection_to_running();
@@ -850,7 +883,10 @@ press Esc and use Enter instead",
     fn refresh_status(&mut self) {
         self.status = self.backend.status().ok();
         self.kernel = kernel::read();
+        // Instance check first: a token change wipes the cache, so the
+        // running-scheduler fetch must come after it, never before.
         self.check_daemon_instance();
+        self.ensure_running_modes();
     }
 
     /// Re-enumerates the scheduler list. The list is otherwise fetched
@@ -878,22 +914,66 @@ press Esc and use Enter instead",
     /// Lazily fills the per-scheduler argument cache. The daemon reads its
     /// configuration once at startup, so a successful answer stays valid
     /// until the daemon itself is replaced — which `check_daemon_instance`
-    /// watches for. A failed query is deliberately *not* cached: an absent
-    /// entry reads as "unknown" (fail open in `selected_mode_configured`)
-    /// and the next call here simply retries.
+    /// watches for. A failed query is remembered and retried only after
+    /// [`MODE_ARGS_RETRY_COOLDOWN`]; the entry keeps reading as "unknown"
+    /// (fail open in `selected_mode_configured`) either way.
     fn refresh_modes(&mut self) {
+        let Some(sched) = self.selected_scheduler().map(ToOwned::to_owned) else {
+            return;
+        };
+        self.ensure_modes_for(sched);
+    }
+
+    /// The status annotation's data: the selection-driven cache misses the
+    /// running scheduler whenever the user browses elsewhere. Skipped when
+    /// the verdict is decided without it (custom args, `Auto`, idle).
+    fn ensure_running_modes(&mut self) {
+        let Some(status) = &self.status else {
+            return;
+        };
+        if !status.args.is_empty() || status.mode == SchedMode::Auto {
+            return;
+        }
+        let Some(sched) = status.current.clone() else {
+            return;
+        };
+        self.ensure_modes_for(sched);
+    }
+
+    /// The mode cache is two structures moving as one: the answers and
+    /// the remembered failures. Every reset path goes through here, so a
+    /// future third piece cannot be forgotten in one of them.
+    fn clear_mode_cache(&mut self) {
+        self.mode_args.clear();
+        self.mode_args_failed.clear();
+    }
+
+    fn ensure_modes_for(&mut self, sched: String) {
         if !self.backend.capabilities().modes {
             return;
         }
-        let Some(sched) = self.selected_scheduler() else {
-            return;
-        };
-        if self.mode_args.contains_key(sched) {
+        if self.mode_args.contains_key(&sched) {
             return;
         }
-        let sched = sched.to_owned();
-        if let Ok(modes) = self.backend.mode_args(&sched) {
-            self.mode_args.insert(sched, modes);
+        // A remembered failure suppresses the query only for the cooldown:
+        // the status path retries every poll, and hammering a daemon that
+        // cannot answer helps nobody, but a transient hiccup must heal
+        // without a manual refresh.
+        if self
+            .mode_args_failed
+            .get(&sched)
+            .is_some_and(|failed_at| failed_at.elapsed() < MODE_ARGS_RETRY_COOLDOWN)
+        {
+            return;
+        }
+        match self.backend.mode_args(&sched) {
+            Ok(modes) => {
+                self.mode_args_failed.remove(&sched);
+                self.mode_args.insert(sched, modes);
+            }
+            Err(_) => {
+                self.mode_args_failed.insert(sched, Instant::now());
+            }
         }
     }
 
@@ -915,7 +995,7 @@ press Esc and use Enter instead",
             .as_deref()
             .is_some_and(|old| old != token)
         {
-            self.mode_args.clear();
+            self.clear_mode_cache();
             self.refresh_modes();
         }
         self.daemon_instance = Some(token);
@@ -960,6 +1040,9 @@ mod tests {
         /// Current instance token, shared so a test can "restart" the
         /// daemon underneath the app.
         token: Rc<RefCell<Option<String>>>,
+        /// The answer `status` returns; defaults to a benign
+        /// "nothing running" so tests may drive refresh paths freely.
+        status_answer: Status,
     }
 
     impl StubBackend {
@@ -969,6 +1052,13 @@ mod tests {
                 modes: HashMap::new(),
                 mode_queries: Rc::new(RefCell::new(0)),
                 token: Rc::new(RefCell::new(None)),
+                status_answer: Status {
+                    current: None,
+                    mode: SchedMode::Auto,
+                    args: Vec::new(),
+                    default_sched: None,
+                    default_mode: SchedMode::Auto,
+                },
             }
         }
     }
@@ -989,16 +1079,7 @@ mod tests {
             }
         }
         fn status(&self) -> Result<Status> {
-            // Benign "nothing running" answer, so tests may drive paths
-            // that refresh the status; tests interested in a particular
-            // state still set `App::status` directly afterwards.
-            Ok(Status {
-                current: None,
-                mode: SchedMode::Auto,
-                args: Vec::new(),
-                default_sched: None,
-                default_mode: SchedMode::Auto,
-            })
+            Ok(self.status_answer.clone())
         }
         fn supported_schedulers(&self) -> Result<Vec<String>> {
             Ok(self.schedulers.clone())
@@ -1070,6 +1151,24 @@ mod tests {
         }
     }
 
+    /// The one verdict table both surfaces must agree on, row for row.
+    fn verdict_vector() -> Vec<(SchedMode, bool, &'static str)> {
+        vec![
+            (SchedMode::Auto, true, "Auto always counts"),
+            (SchedMode::Gaming, true, "non-empty arguments"),
+            (
+                SchedMode::PowerSave,
+                false,
+                "present in the answer with an empty argument list",
+            ),
+            (
+                SchedMode::Server,
+                false,
+                "absent from a successful answer means not configured",
+            ),
+        ]
+    }
+
     #[test]
     fn configured_follows_the_cached_argument_lists() {
         let mut backend = StubBackend::new();
@@ -1077,20 +1176,10 @@ mod tests {
         let mut app = app_with_backend(backend);
         app.refresh_modes();
 
-        select_mode(&mut app, SchedMode::Auto);
-        assert!(app.selected_mode_configured(), "Auto always counts");
-        select_mode(&mut app, SchedMode::Gaming);
-        assert!(app.selected_mode_configured(), "non-empty arguments");
-        select_mode(&mut app, SchedMode::PowerSave);
-        assert!(
-            !app.selected_mode_configured(),
-            "present in the answer with an empty argument list"
-        );
-        select_mode(&mut app, SchedMode::Server);
-        assert!(
-            !app.selected_mode_configured(),
-            "absent from a successful answer means not configured"
-        );
+        for (mode, expected, why) in verdict_vector() {
+            select_mode(&mut app, mode);
+            assert_eq!(app.selected_mode_configured(), expected, "{why}");
+        }
     }
 
     #[test]
@@ -1101,6 +1190,91 @@ mod tests {
         let mut app = app_with_backend(StubBackend::new());
         select_mode(&mut app, SchedMode::Server);
         assert!(app.selected_mode_configured());
+    }
+
+    /// The running status must agree with the selection on every row of
+    /// the shared verdict vector, plus the cases only a running status
+    /// can pose.
+    #[test]
+    fn running_verdict_mirrors_the_selection_verdict() {
+        let mut backend = StubBackend::new();
+        backend.modes.insert("scx_bpfland".into(), bpfland_modes());
+        let mut app = app_with_backend(backend);
+        app.refresh_modes();
+
+        for (mode, expected, why) in verdict_vector() {
+            app.status = Some(running("scx_bpfland", mode, &[]));
+            assert_eq!(app.running_mode_configured(), expected, "{why}");
+        }
+        app.status = Some(running("scx_cake", SchedMode::Gaming, &[]));
+        assert!(app.running_mode_configured(), "no cache entry fails open");
+        app.status = Some(running("scx_bpfland", SchedMode::Gaming, &["-k"]));
+        assert!(
+            app.running_mode_configured(),
+            "custom arguments make the question inapplicable"
+        );
+        app.status = None;
+        assert!(app.running_mode_configured(), "no status, no annotation");
+    }
+
+    #[test]
+    fn refresh_status_fetches_the_running_scheduler_past_the_selection() {
+        // Selection stays elsewhere; the status refresh itself must feed
+        // the annotation - through the real entry point, so removing the
+        // hook from refresh_status fails this test.
+        let mut backend = StubBackend::new();
+        backend
+            .modes
+            .insert("scx_cake".into(), vec![(SchedMode::Gaming, Vec::new())]);
+        backend.status_answer = running("scx_cake", SchedMode::Gaming, &[]);
+        let mut app = app_with_backend(backend);
+
+        app.refresh_status();
+        assert!(app.mode_args.contains_key("scx_cake"));
+        assert!(
+            !app.running_mode_configured(),
+            "the fetched table decides the verdict"
+        );
+    }
+
+    #[test]
+    fn failed_table_query_waits_out_the_cooldown() {
+        // No answer configured for the running scheduler: the query fails.
+        // The periodic status refresh must not hammer it - a remembered
+        // failure holds for the cooldown, then earns one retry; a manual
+        // 'R' retries immediately.
+        let mut backend = StubBackend::new();
+        backend.status_answer = running("scx_cake", SchedMode::Gaming, &[]);
+        let queries = Rc::clone(&backend.mode_queries);
+        let mut app = app_with_backend(backend);
+
+        let baseline = *queries.borrow();
+        app.refresh_status();
+        app.refresh_status();
+        app.refresh_status();
+        assert_eq!(*queries.borrow() - baseline, 1, "three polls, one probe");
+        assert!(
+            app.running_mode_configured(),
+            "an unanswered table keeps failing open"
+        );
+
+        let expired = Instant::now()
+            .checked_sub(MODE_ARGS_RETRY_COOLDOWN)
+            .expect("test host uptime exceeds the cooldown");
+        app.mode_args_failed.insert("scx_cake".into(), expired);
+        app.refresh_status();
+        assert_eq!(
+            *queries.borrow() - baseline,
+            2,
+            "an expired failure earns one retry"
+        );
+
+        app.on_key(KeyEvent::from(KeyCode::Char('R')));
+        assert_eq!(
+            *queries.borrow() - baseline,
+            4,
+            "manual refresh retries both the selection's and the running scheduler's table"
+        );
     }
 
     #[test]
@@ -1140,8 +1314,11 @@ mod tests {
     }
 
     #[test]
-    fn failed_query_is_not_cached() {
+    fn failed_query_is_remembered() {
         // The stub has no answer for any scheduler, so every query fails.
+        // With the status path retrying every poll, a failure is probed
+        // once and then held for the cooldown; the caches' resets retry
+        // immediately.
         let backend = StubBackend::new();
         let queries = Rc::clone(&backend.mode_queries);
         let mut app = app_with_backend(backend);
@@ -1150,8 +1327,8 @@ mod tests {
         app.refresh_modes();
         assert_eq!(
             *queries.borrow(),
-            2,
-            "a failure must stay uncached so the next call retries"
+            1,
+            "a failure is remembered, not hammered"
         );
     }
 
