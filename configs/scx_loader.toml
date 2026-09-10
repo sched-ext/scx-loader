@@ -4,6 +4,14 @@
 # This field specifies the mode which will be used when scx_loader starts (e.g., on boot).
 #default_mode = "Auto"
 
+# Follow power-profiles-daemon and map its profiles to scx-loader modes.
+# The integration is disabled by default, and every mapping is optional.
+#[power_profiles]
+#enabled = true
+#power_saver = "PowerSave"
+#balanced = "Auto"
+#performance = "Gaming"
+
 # This "structure" allows configuring flags for each scheduler mode of particular scx scheduler
 #[scheds.'scheduler']
 #auto_mode = []
