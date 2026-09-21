@@ -113,6 +113,7 @@ pub fn get_default_config() -> Config {
         SupportedSched::MLFQ,
         SupportedSched::EEVDF,
         SupportedSched::Chaos,
+        SupportedSched::Mavd,
     ];
     let scheds_map = HashMap::from(supported_scheds.map(init_default_config_entry));
     Config {
@@ -214,7 +215,7 @@ fn get_default_scx_flags_for_mode(
             SchedMode::Gaming => vec!["-m", "all"],
             SchedMode::Auto => vec!["-m", "auto"],
         },
-        SupportedSched::Lavd => match sched_mode {
+        SupportedSched::Lavd | SupportedSched::Mavd => match sched_mode {
             SchedMode::Gaming | SchedMode::LowLatency => {
                 vec!["--performance", "--pinned-slice-us", "500"]
             }
