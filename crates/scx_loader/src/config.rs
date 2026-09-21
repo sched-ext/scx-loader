@@ -40,8 +40,10 @@ pub struct Sched {
 /// This function will return an error if a config file is found but fails to be parsed.
 pub fn init_config() -> Result<Config> {
     if let Ok(config_path) = get_config_path() {
+        log::info!("using config file {config_path}");
         parse_config_file(&config_path)
     } else {
+        log::info!("no config file found, using built-in default configuration");
         Ok(get_default_config())
     }
 }
