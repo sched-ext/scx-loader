@@ -114,6 +114,7 @@ pub fn get_default_config() -> Config {
         SupportedSched::EEVDF,
         SupportedSched::Chaos,
         SupportedSched::Mavd,
+        SupportedSched::Maestro,
     ];
     let scheds_map = HashMap::from(supported_scheds.map(init_default_config_entry));
     Config {
@@ -261,7 +262,8 @@ fn get_default_scx_flags_for_mode(
         | SupportedSched::Forge
         | SupportedSched::Cake
         | SupportedSched::MLFQ
-        | SupportedSched::EEVDF => vec![],
+        | SupportedSched::EEVDF
+        | SupportedSched::Maestro => vec![],
     }
 }
 
