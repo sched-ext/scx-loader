@@ -48,6 +48,8 @@ pub enum SupportedSched {
     Forge,
     #[serde(rename = "scx_mlfq")]
     MLFQ,
+    #[serde(rename = "scx_eevdf")]
+    EEVDF,
 }
 
 impl FromStr for SupportedSched {
@@ -59,6 +61,7 @@ impl FromStr for SupportedSched {
             "scx_bpfland" => Ok(SupportedSched::Bpfland),
             "scx_cake" => Ok(SupportedSched::Cake),
             "scx_cosmos" => Ok(SupportedSched::Cosmos),
+            "scx_eevdf" => Ok(SupportedSched::EEVDF),
             "scx_flash" => Ok(SupportedSched::Flash),
             "scx_flow" => Ok(SupportedSched::Flow),
             "scx_forge" => Ok(SupportedSched::Forge),
@@ -88,6 +91,7 @@ impl From<SupportedSched> for &str {
             SupportedSched::Bpfland => "scx_bpfland",
             SupportedSched::Cake => "scx_cake",
             SupportedSched::Cosmos => "scx_cosmos",
+            SupportedSched::EEVDF => "scx_eevdf",
             SupportedSched::Flash => "scx_flash",
             SupportedSched::Flow => "scx_flow",
             SupportedSched::Forge => "scx_forge",

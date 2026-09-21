@@ -118,6 +118,7 @@ impl ScxLoader {
             "scx_bpfland",
             "scx_cake",
             "scx_cosmos",
+            "scx_eevdf",
             "scx_flash",
             "scx_flow",
             "scx_forge",
