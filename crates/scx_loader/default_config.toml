@@ -112,13 +112,6 @@ lowlatency_mode = ["-y", "-f", "--task-slice", "true"]
 powersave_mode = ["--sched-mode", "efficiency"]
 server_mode = ["--keep-running"]
 
-[scheds.scx_mavd]
-auto_mode = ["--autopilot", "--pinned-slice-us", "500"]
-gaming_mode = ["--performance", "--pinned-slice-us", "500"]
-lowlatency_mode = ["--performance", "--pinned-slice-us", "500"]
-powersave_mode = ["--powersave", "--pinned-slice-us", "500"]
-server_mode = ["--performance", "--slice-min-us", "3000", "--slice-max-us", "10000", "--pinned-slice-us", "3000"]
-
 [scheds.scx_maestro]
 auto_mode = []
 gaming_mode = []

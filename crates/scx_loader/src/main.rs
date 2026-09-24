@@ -125,7 +125,6 @@ impl ScxLoader {
             "scx_forge",
             "scx_lavd",
             "scx_maestro",
-            "scx_mavd",
             "scx_mlfq",
             "scx_pandemonium",
             "scx_p2dq",

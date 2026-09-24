@@ -133,13 +133,6 @@ lowlatency_mode = ["-y", "-f", "--task-slice", "true"]
 powersave_mode = ["--sched-mode", "efficiency"]
 server_mode = ["--keep-running"]
 
-[scheds.scx_mavd]
-auto_mode = ["--autopilot", "--pinned-slice-us", "500"]
-gaming_mode = ["--performance", "--pinned-slice-us", "500"]
-lowlatency_mode = ["--performance", "--pinned-slice-us", "500"]
-powersave_mode = ["--powersave", "--pinned-slice-us", "500"]
-server_mode = ["--performance", "--slice-min-us", "3000", "--slice-max-us", "10000", "--pinned-slice-us", "3000"]
-
 [scheds.scx_maestro]
 auto_mode = []
 gaming_mode = []
@@ -223,12 +216,6 @@ The example configuration above shows how to set custom flags for different sche
     * Low Latency mode: `-y -f --task-slice true`
     * Power Save mode: `--sched-mode efficiency`
     * Server mode: `--keep-running`
-* For `scx_mavd`:
-    * Auto mode: `--autopilot --pinned-slice-us 500`
-    * Gaming mode: `--performance --pinned-slice-us 500`
-    * Low Latency mode: `--performance --pinned-slice-us 500`
-    * Power Save mode: `--powersave --pinned-slice-us 500`
-    * Server mode: `--performance --slice-min-us 3000 --slice-max-us 10000 --pinned-slice-us 3000`
 * For `scx_maestro`:
     * No custom flags are defined, so the default flags for each mode will be used.
 
