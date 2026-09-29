@@ -27,10 +27,9 @@ use scx_loader::SchedMode;
 use zbus::blocking::Connection;
 use zbus::blocking::fdo::{DBusProxy, PropertiesProxy};
 use zbus::names::{BusName, InterfaceName};
-use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedValue;
 
-use super::{Capabilities, ModeArgs, SchedulerBackend, Status};
+use super::{Capabilities, ModeArgs, RuntimeStatus, SchedulerBackend, Status};
 
 /// Sentinel used by `scx_loader` for "nothing running / not configured".
 const UNKNOWN: &str = "unknown";
@@ -72,8 +71,13 @@ trait Loader {
     #[zbus(property)]
     fn current_scheduler_args(&self) -> zbus::Result<Vec<String>>;
 
-    #[zbus(property)]
+    // Never-signalling so zbus does not cache it: a manual refresh stays a real query.
+    #[zbus(property(emits_changed_signal = "false"))]
     fn supported_schedulers(&self) -> zbus::Result<Vec<String>>;
+
+    /// Doorbell key only ([`super::RuntimeStatus::generation`]); absent on older daemons.
+    #[zbus(property)]
+    fn daemon_generation(&self) -> zbus::Result<String>;
 
     #[zbus(property)]
     fn default_scheduler(&self) -> zbus::Result<String>;
@@ -94,6 +98,8 @@ pub struct LoaderBackend {
     /// fetch the whole status in a single `GetAll` round-trip instead of
     /// five per-property `Get`s (see [`SchedulerBackend::status`]).
     props: PropertiesProxy<'static>,
+    /// Probed once at `connect()`; without it the push path stays disabled.
+    has_generation: bool,
     /// Scheduler list obtained by the `connect()` probe, consumed by the
     /// *first* `supported_schedulers()` call so startup does not repeat a
     /// round-trip whose answer it already holds. Later calls always go to
@@ -107,14 +113,7 @@ impl LoaderBackend {
     /// before the terminal is put into raw mode.
     pub fn connect() -> Result<Self> {
         let conn = Connection::system().context("failed to connect to the system D-Bus")?;
-        // Liveness gate before the real probe: `NameHasOwner` answers
-        // instantly from the bus daemon itself and never triggers D-Bus
-        // activation. Without it, probing a name that is not running would
-        // either wait out an activation attempt (activatable but broken
-        // unit) or a method-call timeout before auto-detection can fall
-        // back to `scx.service`. If the name is not owned but *is*
-        // activatable, the probe below is allowed to proceed and start the
-        // daemon — that is the activation working as intended.
+        // `NameHasOwner` never triggers activation — fail fast.
         let dbus = DBusProxy::new(&conn).context("failed to create the D-Bus proxy")?;
         let name = BusName::from_static_str(SERVICE).expect("valid bus name literal");
         let owned = dbus
@@ -135,16 +134,8 @@ is the scx_loader service installed?"
                 );
             }
         }
-        // Property caching must stay off: zbus invalidates its cache only on
-        // `PropertiesChanged`, and the scx_loader daemon never emits it. With
-        // the default (lazy) caching, a long-lived client like this one would
-        // freeze `CurrentScheduler` at its first-read value forever. One-shot
-        // clients such as scxctl never notice, which is why they get away
-        // with `::new()`. Should the daemon ever start emitting the signal,
-        // this can be reverted and the status poll replaced with a
-        // property-change subscription.
+        // Signals keep the cache current; `status()` stays on the cache-bypassing `GetAll`.
         let proxy = LoaderProxyBlocking::builder(&conn)
-            .cache_properties(CacheProperties::No)
             .build()
             .context("failed to create the org.scx.Loader proxy")?;
         // zbus errors already render their full cause in `Display`, so the
@@ -163,10 +154,13 @@ is the scx_loader service installed?"
             .context("invalid path for the Properties proxy")?
             .build()
             .context("failed to create the Properties proxy")?;
+        // Pre-push daemon: disabled for the session; also primes the cache.
+        let has_generation = proxy.daemon_generation().is_ok();
         Ok(Self {
             proxy,
             props,
             dbus,
+            has_generation,
             initial_schedulers: RefCell::new(Some(schedulers)),
         })
     }
@@ -216,10 +210,7 @@ impl SchedulerBackend for LoaderBackend {
             .map(|owner| owner.to_string())
     }
 
-    /// One `GetAll` round-trip instead of five `Get`s. With property
-    /// caching off (see `connect`), every per-property read is a real
-    /// D-Bus call, so the batched form cuts both startup and the periodic
-    /// background refresh from five round-trips to one.
+    /// One `GetAll` bypassing the proxy cache: the authoritative read must see the daemon.
     fn status(&self) -> Result<Status> {
         let iface = InterfaceName::from_static_str(SERVICE).expect("valid interface literal");
         let mut props = self
@@ -236,9 +227,21 @@ impl SchedulerBackend for LoaderBackend {
         })
     }
 
+    /// Movement detector; not atomic — a torn snapshot rings once more.
+    fn cached_status(&self) -> Result<Option<RuntimeStatus>> {
+        if !self.has_generation {
+            return Ok(None);
+        }
+        Ok(Some(RuntimeStatus {
+            current: none_if_unknown(self.proxy.current_scheduler()?),
+            mode: self.proxy.scheduler_mode()?,
+            args: self.proxy.current_scheduler_args()?,
+            generation: self.proxy.daemon_generation()?,
+        }))
+    }
+
     fn supported_schedulers(&self) -> Result<Vec<String>> {
-        // First call consumes the connect-time probe result; see the field
-        // docs. Every later call is a fresh query.
+        // First call consumes the connect-time probe; later calls are fresh queries.
         if let Some(cached) = self.initial_schedulers.borrow_mut().take() {
             return Ok(cached);
         }
