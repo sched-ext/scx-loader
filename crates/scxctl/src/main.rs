@@ -179,15 +179,26 @@ struct LoaderSnapshot {
     generation: Option<String>,
 }
 
-fn read_loader_snapshot(scx_loader: &LoaderClientProxyBlocking) -> Option<LoaderSnapshot> {
-    let properties = zbus::blocking::fdo::PropertiesProxy::builder(scx_loader.inner().connection())
-        .destination("org.scx.Loader")
-        .ok()?
-        .path("/org/scx/Loader")
-        .ok()?
+/// An uncached `org.freedesktop.DBus.Properties` proxy for the loader.
+///
+/// The typed proxy caches properties, which is wrong for reads that must
+/// reflect the daemon answering *now* - snapshots and generation checks.
+fn loader_properties(
+    scx_loader: &LoaderClientProxyBlocking,
+) -> zbus::Result<zbus::blocking::fdo::PropertiesProxy<'static>> {
+    zbus::blocking::fdo::PropertiesProxy::builder(scx_loader.inner().connection())
+        .destination("org.scx.Loader")?
+        .path("/org/scx/Loader")?
         .build()
-        .ok()?;
-    let iface = InterfaceName::try_from("org.scx.Loader").ok()?;
+}
+
+fn loader_interface() -> InterfaceName<'static> {
+    InterfaceName::from_static_str_unchecked("org.scx.Loader")
+}
+
+fn read_loader_snapshot(scx_loader: &LoaderClientProxyBlocking) -> Option<LoaderSnapshot> {
+    let properties = loader_properties(scx_loader).ok()?;
+    let iface = loader_interface();
     // Read until two consecutive answers agree; see scxtui's status() for
     // the rationale. Capped disagreement fails open with the last answer.
     let mut props = properties.get_all(iface.clone()).ok()?;
