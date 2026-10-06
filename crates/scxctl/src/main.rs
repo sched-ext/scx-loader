@@ -3,7 +3,9 @@ mod cli;
 use clap::Parser;
 use cli::{Cli, Commands};
 use colored::Colorize;
-use scx_loader::{SchedMode, SupportedSched, dbus::LoaderClientProxyBlocking};
+use scx_loader::{SchedMode, SupportedSched, config::Sched, dbus::LoaderClientProxyBlocking};
+use serde::Serialize;
+use std::collections::{BTreeMap, HashMap};
 use std::process::exit;
 use zbus::blocking::Connection;
 use zbus::names::InterfaceName;
@@ -406,6 +408,228 @@ fn cmd_restore(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std
     Ok(())
 }
 
+/// The scheduler configuration the running daemon resolved, as far as it
+/// is visible over D-Bus.
+///
+/// Shaped like the config file (`scx_loader::config::Config`) so output
+/// produced from a matching loader schema parses back as one, with two
+/// deliberate differences:
+///
+/// - every mode carries the arguments the daemon would actually use, so
+///   built-in fallbacks are filled in and an empty list means "the
+///   scheduler's own defaults" - re-reading the output yields the same
+///   behavior, not the same file;
+/// - `power_profiles` is absent, because the daemon does not expose it
+///   over D-Bus. Leaving it out beats printing a default that may lie.
+///
+/// `scheds` is a `BTreeMap` so the output is stable and diffable across
+/// runs and machines.
+#[derive(Debug, PartialEq, Serialize)]
+struct ConfigDump {
+    default_sched: Option<String>,
+    default_mode: SchedMode,
+    scheds: BTreeMap<String, Sched>,
+}
+
+/// Resolved arguments per mode, as `SchedulerModeArgs` reports them.
+type ModeArgs = Vec<(SchedMode, Vec<String>)>;
+
+/// What one read of `DaemonGeneration` established.
+///
+/// `Unsupported` and `Unreadable` must stay distinct: only a daemon that
+/// positively lacks the property may be accepted unconfirmed. Collapsing
+/// a failed read into "no generation" would let two failures pass as a
+/// legacy daemon and quietly void the fail-closed guarantee.
+#[derive(Debug, PartialEq)]
+enum Generation {
+    /// The daemon reported this generation.
+    Present(String),
+    /// The daemon predates `DaemonGeneration`: absent from `GetAll`, or
+    /// `Get` answered `UnknownProperty`.
+    Unsupported,
+    /// The property could not be read or decoded; the reason is kept for
+    /// the final error.
+    Unreadable(String),
+}
+
+impl Generation {
+    fn from_value(value: zbus::zvariant::OwnedValue) -> Self {
+        String::try_from(value).map_or_else(
+            |err| Generation::Unreadable(format!("DaemonGeneration has the wrong type: {err}")),
+            Generation::Present,
+        )
+    }
+
+    /// From a `GetAll` answer: a missing key is the legacy daemon.
+    fn from_get_all(value: Option<zbus::zvariant::OwnedValue>) -> Self {
+        value.map_or(Generation::Unsupported, Generation::from_value)
+    }
+
+    /// From a `Get` answer: only `UnknownProperty` is the legacy daemon;
+    /// any other error is a failed read.
+    fn from_get(result: zbus::fdo::Result<zbus::zvariant::OwnedValue>) -> Self {
+        match result {
+            Ok(value) => Generation::from_value(value),
+            Err(zbus::fdo::Error::UnknownProperty(_)) => Generation::Unsupported,
+            Err(err) => Generation::Unreadable(format!("reading DaemonGeneration failed: {err}")),
+        }
+    }
+}
+
+/// One full read of the loader configuration, plus the `DaemonGeneration`
+/// seen before and after it.
+struct ConfigRead {
+    dump: ConfigDump,
+    generation_before: Generation,
+    generation_after: Generation,
+}
+
+/// Why a read cannot be trusted to come from a single daemon instance.
+///
+/// The configuration is fixed for an instance's lifetime, so an
+/// unchanged generation around the whole read rules out a mix of two
+/// configs. Both sides `Unsupported` is a daemon that predates
+/// `DaemonGeneration`: unconfirmable, but such a daemon cannot tell us
+/// otherwise, so the read is accepted. Everything else is rejected - a
+/// changed generation, an instance change across the legacy boundary,
+/// or any read that failed.
+fn generation_mismatch(before: &Generation, after: &Generation) -> Option<String> {
+    match (before, after) {
+        (Generation::Present(a), Generation::Present(b)) if a == b => None,
+        (Generation::Unsupported, Generation::Unsupported) => None,
+        (Generation::Unreadable(reason), _) | (_, Generation::Unreadable(reason)) => {
+            Some(reason.clone())
+        }
+        _ => Some("scx_loader was replaced while its configuration was being read".to_owned()),
+    }
+}
+
+/// Maps the per-mode arguments reported by `SchedulerModeArgs` onto the
+/// config file's `Sched` shape. A mode the daemon did not report stays
+/// `None`, i.e. omitted from TOML and `null` in JSON.
+fn sched_from_mode_args(mode_args: ModeArgs) -> Sched {
+    let mut sched = Sched::default();
+    for (mode, args) in mode_args {
+        let slot = match mode {
+            SchedMode::Auto => &mut sched.auto_mode,
+            SchedMode::Gaming => &mut sched.gaming_mode,
+            SchedMode::PowerSave => &mut sched.powersave_mode,
+            SchedMode::LowLatency => &mut sched.lowlatency_mode,
+            SchedMode::Server => &mut sched.server_mode,
+        };
+        *slot = Some(args);
+    }
+    sched
+}
+
+/// Pure assembly of the dump from what the daemon reported, so the
+/// shape can be tested without a running loader.
+fn build_config_dump(
+    default_sched: String,
+    default_mode: SchedMode,
+    mode_args: Vec<(String, ModeArgs)>,
+) -> ConfigDump {
+    ConfigDump {
+        // "unknown" is the property's sentinel for "not configured".
+        default_sched: (default_sched != "unknown").then_some(default_sched),
+        default_mode,
+        scheds: mode_args
+            .into_iter()
+            .map(|(name, args)| (name, sched_from_mode_args(args)))
+            .collect(),
+    }
+}
+
+fn take_property<K, T>(
+    props: &mut HashMap<K, zbus::zvariant::OwnedValue>,
+    name: &str,
+) -> Result<T, Box<dyn std::error::Error>>
+where
+    K: std::borrow::Borrow<str> + std::hash::Hash + Eq,
+    T: TryFrom<zbus::zvariant::OwnedValue>,
+    T::Error: std::error::Error + 'static,
+{
+    let value = props
+        .remove(name)
+        .ok_or_else(|| format!("scx_loader did not report the {name} property"))?;
+    Ok(T::try_from(value)?)
+}
+
+fn read_config_once(
+    scx_loader: &LoaderClientProxyBlocking,
+) -> Result<ConfigRead, Box<dyn std::error::Error>> {
+    let properties = loader_properties(scx_loader)?;
+    let mut props = properties.get_all(loader_interface())?;
+
+    let generation_before = Generation::from_get_all(props.remove("DaemonGeneration"));
+    let default_sched: String = take_property(&mut props, "DefaultScheduler")?;
+    let default_mode: SchedMode = take_property(&mut props, "DefaultMode")?;
+    let supported: Vec<String> = take_property(&mut props, "SupportedSchedulers")?;
+
+    // Called by name rather than through the typed proxy: SchedulerModeArgs
+    // takes the scheduler as a plain string on the wire, and a dump should
+    // cover every scheduler the daemon knows, including ones this scxctl
+    // build has no SupportedSched variant for.
+    let mut mode_args = Vec::with_capacity(supported.len());
+    for name in supported {
+        let args: ModeArgs = scx_loader
+            .inner()
+            .call("SchedulerModeArgs", &(name.as_str(),))?;
+        mode_args.push((name, args));
+    }
+
+    let generation_after =
+        Generation::from_get(properties.get(loader_interface(), "DaemonGeneration"));
+
+    Ok(ConfigRead {
+        dump: build_config_dump(default_sched, default_mode, mode_args),
+        generation_before,
+        generation_after,
+    })
+}
+
+/// Total reads before giving up on a daemon that keeps being replaced.
+const CONFIG_READ_ATTEMPTS: usize = 3;
+
+/// Reads the configuration, retrying while the daemon instance changes
+/// underneath. Unlike the status snapshot, a mixed answer here fails
+/// closed: a dump is meant to be authoritative, so a capped
+/// disagreement is an error rather than a best guess.
+fn read_config(
+    scx_loader: &LoaderClientProxyBlocking,
+) -> Result<ConfigDump, Box<dyn std::error::Error>> {
+    let mut last_mismatch = String::new();
+    for _ in 0..CONFIG_READ_ATTEMPTS {
+        let read = read_config_once(scx_loader)?;
+        match generation_mismatch(&read.generation_before, &read.generation_after) {
+            None => return Ok(read.dump),
+            Some(reason) => last_mismatch = reason,
+        }
+    }
+    Err(format!(
+        "could not confirm that one scx_loader instance answered the whole read \
+         ({last_mismatch}); try again"
+    )
+    .into())
+}
+
+fn render_config(dump: &ConfigDump, json: bool) -> Result<String, Box<dyn std::error::Error>> {
+    if json {
+        Ok(serde_json::to_string_pretty(dump)? + "\n")
+    } else {
+        Ok(toml::to_string(dump)?)
+    }
+}
+
+fn cmd_config(
+    scx_loader: &LoaderClientProxyBlocking,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dump = read_config(scx_loader)?;
+    print!("{}", render_config(&dump, json)?);
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let conn = Connection::system()?;
@@ -422,6 +646,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Stop => cmd_stop(&scx_loader)?,
         Commands::Restart => cmd_restart(&scx_loader)?,
         Commands::Restore => cmd_restore(&scx_loader)?,
+        Commands::Config { args } => cmd_config(&scx_loader, args.json)?,
     }
 
     Ok(())
@@ -857,5 +1082,221 @@ mod tests {
             resolve_sched_name("from_the_future", &reported),
             Err(SchedNameError::UnsupportedByClient)
         );
+    }
+    fn sample_dump() -> ConfigDump {
+        build_config_dump(
+            "scx_lavd".to_owned(),
+            SchedMode::Gaming,
+            vec![
+                (
+                    "scx_lavd".to_owned(),
+                    vec![
+                        (SchedMode::Auto, vec![]),
+                        (SchedMode::Gaming, vec!["--performance".to_owned()]),
+                        (SchedMode::PowerSave, vec!["--powersave".to_owned()]),
+                        (SchedMode::LowLatency, vec![]),
+                        (SchedMode::Server, vec![]),
+                    ],
+                ),
+                (
+                    "scx_bpfland".to_owned(),
+                    vec![
+                        (SchedMode::Auto, vec![]),
+                        (
+                            SchedMode::LowLatency,
+                            vec!["-m".to_owned(), "performance".to_owned()],
+                        ),
+                    ],
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn config_dump_maps_modes_onto_config_fields() {
+        let dump = sample_dump();
+        let lavd = &dump.scheds["scx_lavd"];
+        assert_eq!(lavd.auto_mode, Some(vec![]));
+        assert_eq!(lavd.gaming_mode, Some(vec!["--performance".to_owned()]));
+        assert_eq!(lavd.powersave_mode, Some(vec!["--powersave".to_owned()]));
+
+        // A mode the daemon did not report stays unset rather than
+        // being invented as "no arguments".
+        let bpfland = &dump.scheds["scx_bpfland"];
+        assert_eq!(bpfland.gaming_mode, None);
+        assert_eq!(
+            bpfland.lowlatency_mode,
+            Some(vec!["-m".to_owned(), "performance".to_owned()])
+        );
+    }
+
+    #[test]
+    fn config_dump_treats_unknown_default_as_unset() {
+        let dump = build_config_dump("unknown".to_owned(), SchedMode::Auto, vec![]);
+        assert_eq!(dump.default_sched, None);
+        let json = render_config(&dump, true).unwrap();
+        assert!(json.contains("\"default_sched\": null"), "{json}");
+        let toml = render_config(&dump, false).unwrap();
+        assert!(!toml.contains("default_sched"), "{toml}");
+    }
+
+    #[test]
+    fn config_dump_is_sorted_by_scheduler_name() {
+        let dump = sample_dump();
+        let names: Vec<&str> = dump.scheds.keys().map(String::as_str).collect();
+        assert_eq!(names, ["scx_bpfland", "scx_lavd"]);
+    }
+
+    fn assert_parses_as_loader_config(config: &scx_loader::config::Config, dump: &ConfigDump) {
+        assert_eq!(config.default_sched, Some(SupportedSched::Lavd));
+        assert_eq!(config.default_mode, Some(SchedMode::Gaming));
+        let scheds: BTreeMap<String, Sched> = config.scheds.clone().into_iter().collect();
+        assert_eq!(scheds, dump.scheds);
+    }
+
+    /// The TOML output is a valid loader config file: it parses back
+    /// with the loader's own types and keeps every value.
+    #[test]
+    fn config_toml_round_trips_through_loader_config() {
+        let dump = sample_dump();
+        let toml = render_config(&dump, false).unwrap();
+        let config: scx_loader::config::Config = toml::from_str(&toml).unwrap();
+        assert_parses_as_loader_config(&config, &dump);
+    }
+
+    /// The JSON output uses the same field names and value spellings as
+    /// the config file, so it deserializes into the loader's types too.
+    #[test]
+    fn config_json_round_trips_through_loader_config() {
+        let dump = sample_dump();
+        let json = render_config(&dump, true).unwrap();
+        let config: scx_loader::config::Config = serde_json::from_str(&json).unwrap();
+        assert_parses_as_loader_config(&config, &dump);
+    }
+
+    #[test]
+    fn config_read_requires_one_daemon_instance() {
+        use Generation::{Present, Unreadable, Unsupported};
+        let present = |g: &str| Present(g.to_owned());
+        let failed = || Unreadable("boom".to_owned());
+
+        assert_eq!(generation_mismatch(&present("a"), &present("a")), None);
+        // Pre-generation daemon: unconfirmable, accepted.
+        assert_eq!(generation_mismatch(&Unsupported, &Unsupported), None);
+
+        // Replaced mid-read, including across the legacy boundary.
+        for (before, after) in [
+            (present("a"), present("b")),
+            (Unsupported, present("b")),
+            (present("a"), Unsupported),
+        ] {
+            assert!(
+                generation_mismatch(&before, &after).is_some(),
+                "{before:?} -> {after:?}"
+            );
+        }
+
+        // A failed read never passes, whatever the other side says - in
+        // particular two failures must not pass as a legacy daemon.
+        for (before, after) in [
+            (failed(), failed()),
+            (failed(), Unsupported),
+            (Unsupported, failed()),
+            (present("a"), failed()),
+            (failed(), present("a")),
+        ] {
+            assert_eq!(
+                generation_mismatch(&before, &after),
+                Some("boom".to_owned()),
+                "{before:?} -> {after:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn generation_read_tells_legacy_daemon_from_failure() {
+        use zbus::fdo::Error;
+        use zbus::zvariant::{OwnedValue, Value};
+
+        let string_value = || OwnedValue::try_from(Value::from("gen-1")).unwrap();
+        let wrong_type = || OwnedValue::from(7u32);
+
+        assert_eq!(
+            Generation::from_get_all(Some(string_value())),
+            Generation::Present("gen-1".to_owned())
+        );
+        assert_eq!(Generation::from_get_all(None), Generation::Unsupported);
+        assert!(matches!(
+            Generation::from_get_all(Some(wrong_type())),
+            Generation::Unreadable(_)
+        ));
+
+        assert_eq!(
+            Generation::from_get(Ok(string_value())),
+            Generation::Present("gen-1".to_owned())
+        );
+        assert_eq!(
+            Generation::from_get(Err(Error::UnknownProperty("DaemonGeneration".to_owned()))),
+            Generation::Unsupported
+        );
+        for err in [
+            Error::Failed("bus went away".to_owned()),
+            Error::NoReply("timeout".to_owned()),
+            Error::InvalidArgs("DaemonGeneration".to_owned()),
+        ] {
+            assert!(matches!(
+                Generation::from_get(Err(err)),
+                Generation::Unreadable(_)
+            ));
+        }
+        assert!(matches!(
+            Generation::from_get(Ok(wrong_type())),
+            Generation::Unreadable(_)
+        ));
+    }
+
+    /// A newer daemon can report schedulers this build has no
+    /// `SupportedSched` variant for. The dump must carry their names
+    /// verbatim; the round-trip through the local `Config` cannot apply
+    /// here (its `default_sched` is `Option<SupportedSched>`), so this is
+    /// checked against the generic TOML/JSON value trees instead.
+    #[test]
+    fn config_dump_keeps_schedulers_unknown_to_this_build() {
+        let dump = build_config_dump(
+            "scx_from_the_future".to_owned(),
+            SchedMode::Auto,
+            vec![(
+                "scx_from_the_future".to_owned(),
+                vec![(SchedMode::Gaming, vec!["--fast".to_owned()])],
+            )],
+        );
+
+        let json: serde_json::Value =
+            serde_json::from_str(&render_config(&dump, true).unwrap()).unwrap();
+        assert_eq!(json["default_sched"], "scx_from_the_future");
+        assert_eq!(
+            json["scheds"]["scx_from_the_future"]["gaming_mode"],
+            serde_json::json!(["--fast"])
+        );
+
+        let toml: toml::Table = render_config(&dump, false).unwrap().parse().unwrap();
+        assert_eq!(toml["default_sched"].as_str(), Some("scx_from_the_future"));
+        assert_eq!(
+            toml["scheds"]["scx_from_the_future"]["gaming_mode"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn config_command_parses_json_switch() {
+        use clap::Parser as _;
+
+        let cli = Cli::try_parse_from(["scxctl", "config", "--json"]).unwrap();
+        assert!(matches!(cli.command, Commands::Config { args } if args.json));
+
+        let cli = Cli::try_parse_from(["scxctl", "config"]).unwrap();
+        assert!(matches!(cli.command, Commands::Config { args } if !args.json));
     }
 }

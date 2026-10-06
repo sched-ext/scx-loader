@@ -68,6 +68,15 @@ pub struct ModesArgs {
     pub show_args: bool,
 }
 
+#[derive(Parser, Debug)]
+pub struct ConfigArgs {
+    #[arg(
+        long,
+        help = "Print the resolved scheduler configuration as JSON instead of TOML"
+    )]
+    pub json: bool,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     #[command(about = "Get the info on the running scheduler")]
@@ -95,4 +104,17 @@ pub enum Commands {
     Restart,
     #[command(about = "Restore the default scheduler from configuration")]
     Restore,
+    #[command(
+        about = "Print the scheduler configuration the running loader resolved",
+        long_about = "Print the scheduler configuration the running loader resolved, as \
+visible over D-Bus, shaped like its \
+config file: TOML by default, JSON with --json. Every mode shows the arguments the \
+loader would actually use, built-in fallbacks included, so the output reflects the \
+daemon's view rather than the file on disk. The power-profiles section is not \
+exposed over D-Bus and is therefore not included."
+    )]
+    Config {
+        #[clap(flatten)]
+        args: ConfigArgs,
+    },
 }

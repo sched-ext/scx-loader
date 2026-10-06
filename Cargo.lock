@@ -1753,7 +1753,10 @@ dependencies = [
  "clap",
  "colored",
  "scx_loader",
+ "serde",
+ "serde_json",
  "shell-words",
+ "toml",
  "zbus",
 ]
 

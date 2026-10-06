@@ -14,6 +14,7 @@
 - Stop the running scheduler
 - Restart the running scheduler
 - Restore the default scheduler from configuration
+- Print the scheduler configuration the running loader resolved, as TOML or JSON
 
 
 ## Installation
@@ -39,6 +40,7 @@ Commands:
   stop     Stop the current scheduler
   restart  Restart the current scheduler with original configuration
   restore  Restore the default scheduler from configuration
+  config   Print the scheduler configuration the running loader resolved
 
   help    Print this message or the help of the given subcommand(s)
 
@@ -110,3 +112,35 @@ Show the resolved arguments for every mode
 ```
 scxctl modes -s lavd --show-args
 ```
+
+```
+$ scxctl config --help
+Print the scheduler configuration the running loader resolved
+
+Usage: scxctl config [OPTIONS]
+
+Options:
+      --json  Print the resolved scheduler configuration as JSON instead of TOML
+  -h, --help  Print help (see more with '--help')
+```
+
+`scxctl config` prints the scheduler configuration as the running
+`scx_loader` resolved it, as far as it is visible over D-Bus, in the
+same shape as its config file: every mode of every scheduler with the
+arguments the loader would actually use, built-in fallbacks included.
+An empty list means the scheduler runs with its own defaults. The TOML
+output is a valid config file for the loader that produced it, and the
+JSON output uses the same field names, so either can be diffed between
+machines or fed to other tools:
+
+```
+$ scxctl config --json | jq '.scheds.scx_lavd.gaming_mode'
+[
+  "--performance",
+  "--pinned-slice-us",
+  "500"
+]
+```
+
+The `power_profiles` section is not exposed over D-Bus and is not
+included.
