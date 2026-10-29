@@ -11,7 +11,7 @@
 * **`SwitchSchedulerWithArgs` Method:** Stops the current scheduler and starts the specified scheduler with the provided arguments.
 * **`CurrentScheduler` Property:** Returns the `scx_name` of the active scheduler or "unknown" if none is running.
 * **`SchedulerMode` Property:** Provides information about the currently active scheduler's mode (profile).
-* **`SupportedSchedulers` Property:**  Lists the schedulers currently supported by `scx_loader`.
+* **`SupportedSchedulers` Property:**  Lists the schedulers currently supported by `scx_loader`, including custom schedulers defined in the config (see [configuration.md](configuration.md#custom-schedulers)).
 * **`SchedulerModes` Method:** Given a `scx_name`, returns the modes that are actually configured (i.e. resolve to a non-empty argument list) for that scheduler. `Auto` is always included. Use this to check ahead of time whether selecting a mode will apply any mode-specific arguments.
 * **`SchedulerModeArgs` Method:** Given a `scx_name`, returns the resolved arguments for *every* mode of that scheduler (not just the configured ones), so you can see the exact configuration instead of only which modes have mode-specific arguments.
 

@@ -11,3 +11,10 @@
 #lowlatency_mode = []
 #powersave_mode = []
 #server_mode = []
+
+# Set to true to allow schedulers that aren't built in. Each one needs a
+# [scheds.'scheduler'] section with the absolute path of its binary, see
+# configuration.md.
+#allow_custom_scheds = false
+#[scheds.scx_mysched]
+#path = "/usr/local/bin/scx_mysched"

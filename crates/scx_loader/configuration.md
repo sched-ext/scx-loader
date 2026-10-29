@@ -139,6 +139,11 @@ server_mode = []
 * Possible values are: `"Auto"`, `"Gaming"`, `"LowLatency"`, `"PowerSave"`, `"Server"`.
 * If this field is not present, it defaults to `"Auto"`.
 
+**`allow_custom_scheds`:**
+
+* Set to `true` to allow schedulers that aren't built into `scx_loader`. See [Custom Schedulers](#custom-schedulers).
+* Defaults to `false`.
+
 **`[scheds.scx_name]`:**
 
 * This section defines the custom flags for a specific scheduler. Replace `scx_name` with the actual name of the scheduler (e.g., `scx_bpfland`, `scx_rusty`, `scx_lavd`, `scx_flash`, `scx_p2dq`, `scx_rustland`).
@@ -205,3 +210,24 @@ If a specific flag is not defined in the configuration file, `scx_loader` will f
 ### Missing Required Fields
 
 If the `default_mode` field is missing, it will default to `"Auto"`. If a `[scheds.scx_name]` section is missing, or if specific mode flags are missing within that section, the default flags for the corresponding scheduler and mode will be used. If `default_sched` is missing or empty, no scheduler will be started automatically.
+
+## Custom Schedulers
+
+`scx_loader` only runs the schedulers it knows about by default. To run another one, for example a scheduler you are developing, set `allow_custom_scheds = true` and give it a `[scheds.scx_name]` section with a `path`:
+
+```toml
+allow_custom_scheds = true
+
+[scheds.scx_mysched]
+path = "/usr/local/bin/scx_mysched"
+auto_mode = []
+gaming_mode = ["--fast"]
+```
+
+* The name must start with `scx_`, followed by lowercase letters, digits or `_`, and must not be the name of a built-in scheduler.
+* `path` must be absolute. It's only read from this file, so D-Bus clients can pick a custom scheduler by name but can't make `scx_loader` run a different binary.
+* The mode fields work as for built-in schedulers, except that there are no default flags to fall back to. A mode without flags runs the scheduler with its own defaults.
+* Custom schedulers show up in `SupportedSchedulers` and can be used everywhere a built-in one can, including `default_sched`.
+* `scx_loader` runs the binary as root, so it should be owned by root and not writable by other users.
+
+A `path` without `allow_custom_scheds = true` is an error, so the setting can't be ignored by mistake.

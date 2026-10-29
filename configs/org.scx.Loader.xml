@@ -43,7 +43,8 @@
 
         A list of the schedulers currently supported by the Scheduler Loader.
         The names of the supported schedulers will be listed as strings in
-        this array.
+        this array: the built-in ones, then any custom schedulers defined in
+        the config file.
     -->
     <property name="SupportedSchedulers" type="as" access="read"/>
 

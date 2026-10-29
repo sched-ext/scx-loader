@@ -402,9 +402,10 @@ fn validate_args(raw: &[String]) -> Vec<String> {
 enum SchedNameError {
     /// The name isn't on the list of schedulers reported by `scx_loader`.
     UnknownName,
-    /// `scx_loader` reports the scheduler as supported, but this `scxctl`
-    /// build doesn't have a matching `SupportedSched` variant (e.g. a newer
-    /// `scx_loader` paired with an older `scxctl`).
+    /// `scx_loader` reports the scheduler as supported, but the name isn't
+    /// one `SupportedSched` can hold. A name this build doesn't know, such as
+    /// a custom scheduler or one added in a newer `scx_loader`, still
+    /// resolves, as `SupportedSched::Custom`.
     UnsupportedByClient,
 }
 
@@ -652,13 +653,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_sched_known_to_daemon_but_not_client() {
-        // A newer scx_loader can report a scheduler this scxctl build has no
-        // SupportedSched variant for. That used to be an unwrap panic; it
-        // must resolve to a distinct, actionable error instead.
+    fn resolves_sched_known_to_daemon_but_not_client() {
+        // A custom scheduler, or one added in a newer scx_loader, has no
+        // SupportedSched variant in this build. scx_loader is the authority
+        // on what it can run, so the name is passed through as is.
         let reported = vec!["scx_from_the_future".to_string()];
         assert_eq!(
             resolve_sched_name("from_the_future", &reported),
+            Ok(SupportedSched::Custom("scx_from_the_future".to_string()))
+        );
+    }
+
+    #[test]
+    fn rejects_reported_sched_with_invalid_name() {
+        // A reported name SupportedSched can't hold must not be an unwrap
+        // panic; it resolves to a distinct, actionable error instead.
+        let reported = vec!["scx_Bad-Name".to_string()];
+        assert_eq!(
+            resolve_sched_name("Bad-Name", &reported),
             Err(SchedNameError::UnsupportedByClient)
         );
     }

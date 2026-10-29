@@ -84,13 +84,28 @@ struct Args {
 
 const ROOT_ACTION_ID: &str = "org.scx.loader.manage-schedulers";
 
+impl ScxLoader {
+    /// Rejects a custom scheduler name the config doesn't define. Any name
+    /// of the right form deserializes, so every method taking one checks it.
+    fn check_known_sched(&self, scx_name: &SupportedSched) -> zbus::fdo::Result<()> {
+        if config::is_known_sched(&self.config, scx_name) {
+            Ok(())
+        } else {
+            Err(zbus::fdo::Error::InvalidArgs(format!(
+                "{} is not supported",
+                scx_name.as_str()
+            )))
+        }
+    }
+}
+
 #[interface(name = "org.scx.Loader")]
 impl ScxLoader {
     /// Get currently running scheduler, in case non is running return "unknown"
     #[zbus(property)]
     fn current_scheduler(&self) -> String {
         if let Some(current_scx) = &self.current_scx {
-            let current_scx: &str = current_scx.clone().into();
+            let current_scx = current_scx.as_str();
             log::debug!("called {current_scx:?}");
             current_scx.into()
         } else {
@@ -110,10 +125,11 @@ impl ScxLoader {
         self.current_args.clone().unwrap_or_default()
     }
 
-    /// Get list of supported schedulers
+    /// Get list of supported schedulers: the built-in ones, then the custom
+    /// ones defined in the config
     #[zbus(property)]
-    fn supported_schedulers(&self) -> Vec<&'static str> {
-        vec![
+    fn supported_schedulers(&self) -> Vec<String> {
+        let builtin = [
             "scx_beerland",
             "scx_bpfland",
             "scx_cake",
@@ -129,15 +145,19 @@ impl ScxLoader {
             "scx_tickless",
             "scx_rustland",
             "scx_rusty",
-        ]
+        ];
+        builtin
+            .into_iter()
+            .map(String::from)
+            .chain(config::get_custom_sched_names(&self.config))
+            .collect()
     }
 
     /// Get the default scheduler configured in config file, returns "unknown" if not set
     #[zbus(property)]
     fn default_scheduler(&self) -> String {
         if let Some(default_scx) = &self.default_sched {
-            let default_scx: &str = default_scx.clone().into();
-            default_scx.into()
+            default_scx.as_str().into()
         } else {
             "unknown".into()
         }
@@ -151,14 +171,19 @@ impl ScxLoader {
 
     /// Get supported modes for the particular scx scheduler
     #[allow(clippy::needless_pass_by_value)]
-    fn scheduler_modes(&self, scx_name: SupportedSched) -> Vec<SchedMode> {
-        config::get_configured_modes(&self.config, &scx_name)
+    fn scheduler_modes(&self, scx_name: SupportedSched) -> zbus::fdo::Result<Vec<SchedMode>> {
+        self.check_known_sched(&scx_name)?;
+        Ok(config::get_configured_modes(&self.config, &scx_name))
     }
 
     /// Get all arguments for all modes of scx scheduler
     #[allow(clippy::needless_pass_by_value)]
-    fn scheduler_mode_args(&self, scx_name: SupportedSched) -> Vec<(SchedMode, Vec<String>)> {
-        config::get_all_mode_args(&self.config, &scx_name)
+    fn scheduler_mode_args(
+        &self,
+        scx_name: SupportedSched,
+    ) -> zbus::fdo::Result<Vec<(SchedMode, Vec<String>)>> {
+        self.check_known_sched(&scx_name)?;
+        Ok(config::get_all_mode_args(&self.config, &scx_name))
     }
 
     async fn start_scheduler(
@@ -168,6 +193,7 @@ impl ScxLoader {
         scx_name: SupportedSched,
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
+        self.check_known_sched(&scx_name)?;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         log::info!("starting {scx_name:?} with mode {sched_mode:?}..");
 
@@ -188,6 +214,7 @@ impl ScxLoader {
         scx_name: SupportedSched,
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
+        self.check_known_sched(&scx_name)?;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         log::info!("starting {scx_name:?} with args {scx_args:?}..");
 
@@ -210,6 +237,7 @@ impl ScxLoader {
         scx_name: SupportedSched,
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
+        self.check_known_sched(&scx_name)?;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         log::info!("switching {scx_name:?} with mode {sched_mode:?}..");
 
@@ -230,6 +258,7 @@ impl ScxLoader {
         scx_name: SupportedSched,
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
+        self.check_known_sched(&scx_name)?;
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         log::info!("switching {scx_name:?} with args {scx_args:?}..");
 
@@ -252,7 +281,7 @@ impl ScxLoader {
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         if let Some(current_scx) = &self.current_scx {
-            let scx_name: &str = current_scx.clone().into();
+            let scx_name = current_scx.as_str();
 
             log::info!("stopping {scx_name:?}..");
             let _ = self.channel.send(ScxMessage::StopSched);
@@ -270,7 +299,7 @@ impl ScxLoader {
     ) -> zbus::fdo::Result<()> {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
         if let Some(current_scx) = &self.current_scx {
-            let scx_name: &str = current_scx.clone().into();
+            let scx_name = current_scx.as_str();
 
             log::info!("restarting {scx_name:?}..");
             let _ = self.channel.send(ScxMessage::RestartSched((
@@ -296,7 +325,7 @@ impl ScxLoader {
         check_authorization_inter(conn, &hdr, ROOT_ACTION_ID).await?;
 
         if let Some(default_scx) = &self.default_sched {
-            let scx_name: &str = default_scx.clone().into();
+            let scx_name = default_scx.as_str();
             log::info!(
                 "restoring default scheduler {scx_name:?} with mode {:?}..",
                 self.default_mode
@@ -347,7 +376,7 @@ async fn monitor_cpu_util() -> Result<()> {
                 if running_sched.is_none() {
                     log::info!("CPU Utilization exceeded 90% for 5 seconds, starting scx_lavd");
 
-                    let scx_name: &str = SupportedSched::Lavd.into();
+                    let scx_name = SupportedSched::Lavd.as_str();
                     running_sched = Some(
                         Command::new(scx_name)
                             .spawn()
@@ -461,7 +490,9 @@ async fn worker_loop(
     // setup channel for scheduler runner
     let (runner_tx, runner_rx) = tokio::sync::mpsc::channel::<RunnerMessage>(1);
 
-    let run_sched_future = tokio::spawn(async move { handle_child_process(runner_rx).await });
+    let runner_config = config.clone();
+    let run_sched_future =
+        tokio::spawn(async move { handle_child_process(&runner_config, runner_rx).await });
 
     // prepare future for tokio
     tokio::pin!(run_sched_future);
@@ -565,18 +596,25 @@ async fn worker_loop(
     }
 }
 
-async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>) -> Result<()> {
+async fn handle_child_process(
+    config: &config::Config,
+    mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>,
+) -> Result<()> {
     let mut task: Option<tokio::task::JoinHandle<Result<Option<ExitStatus>>>> = None;
     let mut cancel_token = Arc::new(tokio_util::sync::CancellationToken::new());
 
     while let Some(message) = rx.recv().await {
         match message {
             RunnerMessage::Switch((scx_sched, sched_args)) => {
+                let Some(program) = sched_program(config, &scx_sched) else {
+                    continue;
+                };
+
                 // stop the sched if its running
                 stop_scheduler(&mut task, &mut cancel_token).await;
 
                 // overwise start scheduler
-                let handle = start_scheduler(scx_sched, sched_args, cancel_token.clone());
+                let handle = start_scheduler(program, sched_args, cancel_token.clone());
                 task = Some(handle);
                 log::debug!("Scheduler started");
             }
@@ -586,8 +624,12 @@ async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>
                     log::error!("Scheduler wasn't finished yet. Stop already running scheduler!");
                     continue;
                 }
+                let Some(program) = sched_program(config, &scx_sched) else {
+                    continue;
+                };
+
                 // overwise start scheduler
-                let handle = start_scheduler(scx_sched, sched_args, cancel_token.clone());
+                let handle = start_scheduler(program, sched_args, cancel_token.clone());
                 task = Some(handle);
                 log::debug!("Scheduler started");
             }
@@ -596,12 +638,15 @@ async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>
             }
             RunnerMessage::Restart((scx_sched, sched_args)) => {
                 log::info!("Got event to restart scheduler!");
+                let Some(program) = sched_program(config, &scx_sched) else {
+                    continue;
+                };
 
                 // stop the sched if its running
                 stop_scheduler(&mut task, &mut cancel_token).await;
 
                 // restart scheduler with the same configuration
-                let handle = start_scheduler(scx_sched, sched_args, cancel_token.clone());
+                let handle = start_scheduler(program, sched_args, cancel_token.clone());
                 task = Some(handle);
                 log::debug!("Scheduler restarted");
             }
@@ -611,9 +656,18 @@ async fn handle_child_process(mut rx: tokio::sync::mpsc::Receiver<RunnerMessage>
     Ok(())
 }
 
+/// Returns the program to run for `scx_sched`, see `config::get_sched_program`.
+fn sched_program(config: &config::Config, scx_sched: &SupportedSched) -> Option<String> {
+    let program = config::get_sched_program(config, scx_sched);
+    if program.is_none() {
+        log::error!("{} is not defined in the config", scx_sched.as_str());
+    }
+    program
+}
+
 /// Start the scheduler with the given arguments
 fn start_scheduler(
-    scx_crate: SupportedSched,
+    program: String,
     args: Vec<String>,
     cancel_token: Arc<tokio_util::sync::CancellationToken>,
 ) -> tokio::task::JoinHandle<Result<Option<ExitStatus>>> {
@@ -625,7 +679,7 @@ fn start_scheduler(
         let mut last_status: Option<ExitStatus> = None;
 
         while retries < max_retries {
-            let child = spawn_scheduler(scx_crate.clone(), args.clone());
+            let child = spawn_scheduler(&program, args.clone());
 
             let mut failed = false;
             if let Ok(mut child) = child {
@@ -673,11 +727,10 @@ fn start_scheduler(
 
 /// Starts the scheduler as a child process and returns child object to manage lifecycle by the
 /// caller.
-fn spawn_scheduler(scx_crate: SupportedSched, args: Vec<String>) -> Result<Child> {
-    let sched_bin_name: &str = scx_crate.into();
-    log::info!("starting {sched_bin_name} command");
+fn spawn_scheduler(program: &str, args: Vec<String>) -> Result<Child> {
+    log::info!("starting {program} command");
 
-    let mut cmd = Command::new(sched_bin_name);
+    let mut cmd = Command::new(program);
     // set arguments
     cmd.args(args);
 

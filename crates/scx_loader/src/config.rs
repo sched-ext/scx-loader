@@ -21,11 +21,18 @@ use crate::SupportedSched;
 pub struct Config {
     pub default_sched: Option<SupportedSched>,
     pub default_mode: Option<SchedMode>,
+    /// Allow `[scheds.NAME]` entries with a `path`, which define schedulers
+    /// that aren't built in. Off by default.
+    pub allow_custom_scheds: bool,
     pub scheds: HashMap<String, Sched>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Sched {
+    /// Absolute path of the binary. Only allowed for custom schedulers,
+    /// i.e. names that aren't built in, and required for them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     pub auto_mode: Option<Vec<String>>,
     pub gaming_mode: Option<Vec<String>>,
     pub lowlatency_mode: Option<Vec<String>>,
@@ -54,6 +61,8 @@ pub fn init_config() -> Result<Config> {
 /// - The file cannot be read (e.g., permissions, not found).
 /// - The file content is empty.
 /// - The file content is not valid TOML.
+/// - A custom scheduler entry or `default_sched` is invalid (see
+///   `validate_config`).
 pub fn parse_config_file(filepath: &str) -> Result<Config> {
     let file_content = fs::read_to_string(filepath)?;
     parse_config_content(&file_content)
@@ -92,7 +101,99 @@ fn parse_config_content(file_content: &str) -> Result<Config> {
         anyhow::bail!("The config file is empty!")
     }
     let config: Config = toml::from_str(file_content)?;
+    validate_config(&config)?;
     Ok(config)
+}
+
+/// Checks the custom scheduler entries and `default_sched`.
+///
+/// A `[scheds.NAME]` entry with a `path` defines a custom scheduler, which
+/// needs `allow_custom_scheds = true`. `NAME` must not be a built-in
+/// scheduler, must look like `scx_[a-z0-9_]+`, and `path` must be absolute.
+/// Entries without a `path` are left alone, so a config that still lists a
+/// scheduler `scx_loader` no longer ships keeps loading.
+fn validate_config(config: &Config) -> Result<()> {
+    for (name, sched) in &config.scheds {
+        let Some(path) = &sched.path else {
+            continue;
+        };
+        if !config.allow_custom_scheds {
+            anyhow::bail!(
+                "[scheds.{name}]: `path` defines a custom scheduler, which needs \
+                 `allow_custom_scheds = true`"
+            );
+        }
+        match name.parse::<SupportedSched>() {
+            Ok(SupportedSched::Custom(_)) => {}
+            Ok(_) => anyhow::bail!(
+                "[scheds.{name}]: `path` is only allowed for custom schedulers, and {name} is \
+                 built in"
+            ),
+            Err(_) => anyhow::bail!(
+                "[scheds.{name}]: a custom scheduler name must be `scx_` followed by lowercase \
+                 letters, digits or `_`"
+            ),
+        }
+        if !Path::new(path).is_absolute() {
+            anyhow::bail!("[scheds.{name}]: `path` must be absolute, got {path:?}");
+        }
+    }
+
+    if let Some(default_sched) = &config.default_sched
+        && !is_known_sched(config, default_sched)
+    {
+        let name = default_sched.as_str();
+        anyhow::bail!("default_sched {name} is not built in and [scheds.{name}] has no `path`");
+    }
+
+    Ok(())
+}
+
+/// Returns the configured path of the custom scheduler `name`, or `None` if
+/// custom schedulers are off or the config doesn't define `name`.
+fn custom_sched_path<'a>(config: &'a Config, name: &str) -> Option<&'a String> {
+    if !config.allow_custom_scheds {
+        return None;
+    }
+    config.scheds.get(name)?.path.as_ref()
+}
+
+/// Returns `true` if `scx_sched` can be started: it's built in, or the config
+/// defines it as a custom scheduler.
+#[must_use]
+pub fn is_known_sched(config: &Config, scx_sched: &SupportedSched) -> bool {
+    match scx_sched {
+        SupportedSched::Custom(name) => custom_sched_path(config, name).is_some(),
+        _ => true,
+    }
+}
+
+/// Returns the program to run for `scx_sched`: the binary name of a built-in
+/// scheduler, looked up in `PATH`, or the configured path of a custom one.
+/// Returns `None` for a custom scheduler the config doesn't define.
+#[must_use]
+pub fn get_sched_program(config: &Config, scx_sched: &SupportedSched) -> Option<String> {
+    match scx_sched {
+        SupportedSched::Custom(name) => custom_sched_path(config, name).cloned(),
+        builtin => Some(builtin.as_str().to_owned()),
+    }
+}
+
+/// Returns the names of the custom schedulers defined in the config, sorted.
+/// Empty unless `allow_custom_scheds` is set.
+#[must_use]
+pub fn get_custom_sched_names(config: &Config) -> Vec<String> {
+    if !config.allow_custom_scheds {
+        return Vec::new();
+    }
+    let mut names: Vec<String> = config
+        .scheds
+        .iter()
+        .filter(|(_, sched)| sched.path.is_some())
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort();
+    names
 }
 
 pub fn get_default_config() -> Config {
@@ -117,6 +218,7 @@ pub fn get_default_config() -> Config {
     Config {
         default_sched: None,
         default_mode: Some(SchedMode::Auto),
+        allow_custom_scheds: false,
         scheds: scheds_map,
     }
 }
@@ -127,8 +229,7 @@ pub fn get_scx_flags_for_mode(
     scx_sched: &SupportedSched,
     sched_mode: SchedMode,
 ) -> Vec<String> {
-    let scx_name: &str = scx_sched.clone().into();
-    if let Some(sched_config) = config.scheds.get(scx_name) {
+    if let Some(sched_config) = config.scheds.get(scx_sched.as_str()) {
         let scx_flags = extract_scx_flags_from_config(sched_config, sched_mode);
 
         // try to exact flags from config, otherwise fallback to hardcoded default
@@ -163,6 +264,7 @@ fn extract_scx_flags_from_config(
 /// Get Sched object for configuration object
 fn get_default_sched_for_config(scx_sched: &SupportedSched) -> Sched {
     Sched {
+        path: None,
         auto_mode: Some(
             get_default_scx_flags_for_mode(scx_sched, SchedMode::Auto)
                 .into_iter()
@@ -249,7 +351,8 @@ fn get_default_scx_flags_for_mode(
             SchedMode::PowerSave => vec!["-m", "powersave"],
             SchedMode::Server | SchedMode::Auto => vec![],
         },
-        // The below Schedulers haven't defined any modes
+        // The below Schedulers haven't defined any modes. Custom schedulers
+        // only have the modes their config entry sets.
         SupportedSched::Rusty
         | SupportedSched::Rustland
         | SupportedSched::Beerland
@@ -259,7 +362,8 @@ fn get_default_scx_flags_for_mode(
         | SupportedSched::Forge
         | SupportedSched::Cake
         | SupportedSched::MLFQ
-        | SupportedSched::EEVDF => vec![],
+        | SupportedSched::EEVDF
+        | SupportedSched::Custom(_) => vec![],
     }
 }
 
@@ -323,12 +427,10 @@ pub fn get_all_mode_args(
 }
 
 /// Initializes entry for config sched map
+#[allow(clippy::needless_pass_by_value)]
 fn init_default_config_entry(scx_sched: SupportedSched) -> (String, Sched) {
     let default_modes = get_default_sched_for_config(&scx_sched);
-    (
-        <SupportedSched as Into<&str>>::into(scx_sched).to_owned(),
-        default_modes,
-    )
+    (scx_sched.as_str().to_owned(), default_modes)
 }
 
 #[cfg(test)]
@@ -520,5 +622,106 @@ server_mode = ["--profile", "gaming"]
                 ),
             ]
         );
+    }
+
+    fn custom(name: &str) -> SupportedSched {
+        SupportedSched::Custom(name.to_owned())
+    }
+
+    #[test]
+    fn test_custom_sched() {
+        let config_str = r#"
+allow_custom_scheds = true
+default_sched = "scx_mine"
+
+[scheds.scx_mine]
+path = "/usr/local/bin/scx_mine"
+gaming_mode = ["--fast"]
+"#;
+        let config = parse_config_content(config_str).expect("Failed to parse config");
+        let mine = custom("scx_mine");
+
+        assert_eq!(config.default_sched, Some(mine.clone()));
+        assert!(is_known_sched(&config, &mine));
+        assert_eq!(
+            get_sched_program(&config, &mine).as_deref(),
+            Some("/usr/local/bin/scx_mine")
+        );
+        assert_eq!(get_custom_sched_names(&config), vec!["scx_mine".to_owned()]);
+        assert_eq!(
+            get_scx_flags_for_mode(&config, &mine, SchedMode::Gaming),
+            vec!["--fast".to_owned()]
+        );
+        // No hardcoded defaults for custom schedulers.
+        assert_eq!(
+            get_scx_flags_for_mode(&config, &mine, SchedMode::PowerSave),
+            Vec::<String>::new()
+        );
+        // Built-in schedulers still run by name.
+        assert_eq!(
+            get_sched_program(&config, &SupportedSched::Lavd).as_deref(),
+            Some("scx_lavd")
+        );
+    }
+
+    #[test]
+    fn test_custom_sched_needs_opt_in() {
+        let config_str = r#"
+[scheds.scx_mine]
+path = "/usr/local/bin/scx_mine"
+"#;
+        let err = parse_config_content(config_str).unwrap_err();
+        assert!(err.to_string().contains("allow_custom_scheds"), "{err}");
+    }
+
+    #[test]
+    fn test_custom_sched_rejects_bad_entries() {
+        for entry in [
+            // A built-in scheduler can't get a path.
+            "[scheds.scx_lavd]\npath = \"/opt/scx_lavd\"",
+            // The path must be absolute, so it's never looked up in PATH.
+            "[scheds.scx_mine]\npath = \"scx_mine\"",
+            "[scheds.scx_mine]\npath = \"./scx_mine\"",
+            // The name must look like a scheduler name.
+            "[scheds.mine]\npath = \"/opt/mine\"",
+            "[scheds.scx_Mine]\npath = \"/opt/scx_mine\"",
+        ] {
+            let config_str = format!("allow_custom_scheds = true\n{entry}\n");
+            let err = parse_config_content(&config_str).unwrap_err();
+            // A validation error, not a TOML syntax error in the fixture.
+            assert!(err.to_string().starts_with("[scheds."), "{entry}: {err}");
+        }
+    }
+
+    #[test]
+    fn test_default_sched_must_be_defined() {
+        let config_str = r#"
+allow_custom_scheds = true
+default_sched = "scx_mine"
+"#;
+        assert!(parse_config_content(config_str).is_err());
+    }
+
+    #[test]
+    fn test_unknown_sched_without_path_is_ignored() {
+        // An entry for a scheduler scx_loader doesn't know still loads, as
+        // before, but doesn't make that scheduler available.
+        let config_str = r#"
+allow_custom_scheds = true
+
+[scheds.scx_gone]
+auto_mode = ["-v"]
+"#;
+        let config = parse_config_content(config_str).expect("Failed to parse config");
+        assert!(!is_known_sched(&config, &custom("scx_gone")));
+        assert!(get_sched_program(&config, &custom("scx_gone")).is_none());
+        assert_eq!(get_custom_sched_names(&config), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_custom_sched_off_by_default() {
+        let config = get_default_config();
+        assert!(!is_known_sched(&config, &custom("scx_mine")));
+        assert_eq!(get_custom_sched_names(&config), Vec::<String>::new());
     }
 }
