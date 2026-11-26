@@ -24,9 +24,9 @@ default_mode = "Auto"
 [scheds.scx_bpfland]
 auto_mode = ["-m", "auto"]
 gaming_mode = ["-m", "all"]
-lowlatency_mode = ["-m", "performance", "-w"]
-powersave_mode = ["-s", "20000", "-m", "powersave", "-I", "100", "-t", "100"]
-server_mode = ["-s", "20000", "-S"]
+lowlatency_mode = ["-m", "performance"]
+powersave_mode = ["-s", "20000", "-m", "powersave"]
+server_mode = ["-s", "20000"]
 
 [scheds.scx_rusty]
 auto_mode = []
@@ -44,10 +44,10 @@ server_mode = ["--performance", "--slice-min-us", "3000", "--slice-max-us", "100
 
 [scheds.scx_flash]
 auto_mode = []
-gaming_mode = []
-lowlatency_mode = []
-powersave_mode = []
-server_mode = []
+gaming_mode = ["-m", "performance"]
+lowlatency_mode = ["-m", "performance"]
+powersave_mode = ["-m", "powersave", "-I", "100", "-t", "100"]
+server_mode = ["-s", "20000"]
 
 [scheds.scx_p2dq]
 auto_mode = ["--sched-mode", "default"]
@@ -63,13 +63,6 @@ lowlatency_mode = ["-f", "5000", "-s", "1000"]
 powersave_mode = ["-f", "50"]
 server_mode = ["-f", "100"]
 
-[scheds.scx_rustland]
-auto_mode = []
-gaming_mode = []
-lowlatency_mode = []
-powersave_mode = []
-server_mode = []
-
 [scheds.scx_cosmos]
 auto_mode = []
 gaming_mode = ["-s", "700"]
@@ -79,9 +72,9 @@ server_mode = []
 
 [scheds.scx_beerland]
 auto_mode = []
-gaming_mode = []
-lowlatency_mode = []
-powersave_mode = []
+gaming_mode = ["-m", "performance"]
+lowlatency_mode = ["-m", "performance"]
+powersave_mode = ["-m", "powersave"]
 server_mode = []
 
 [scheds.scx_cake]
@@ -125,12 +118,40 @@ gaming_mode = []
 lowlatency_mode = []
 powersave_mode = []
 server_mode = []
+
+[scheds.scx_rburst]
+auto_mode = []
+gaming_mode = []
+lowlatency_mode = []
+powersave_mode = []
+server_mode = []
+
+[scheds.scx_reevdf]
+auto_mode = []
+gaming_mode = []
+lowlatency_mode = []
+powersave_mode = []
+server_mode = []
+
+[scheds.scx_rlocal]
+auto_mode = []
+gaming_mode = []
+lowlatency_mode = []
+powersave_mode = []
+server_mode = []
+
+[scheds.scx_rvtime]
+auto_mode = []
+gaming_mode = []
+lowlatency_mode = []
+powersave_mode = []
+server_mode = []
 ```
 
 **`default_sched`:**
 
 * This field specifies the scheduler that will be started automatically when `scx_loader` starts (e.g., on boot).
-* It should be set to the name of a supported scheduler (e.g., `"scx_bpfland"`, `"scx_rusty"`, `"scx_lavd"`, `"scx_flash"`, `"scx_p2dq"`, `"scx_rustland"`).
+* It should be set to the name of a supported scheduler (e.g., `"scx_bpfland"`, `"scx_rusty"`, `"scx_lavd"`, `"scx_flash"`, `"scx_p2dq"`, `"scx_cosmos"`).
 * If this field is not present or is set to an empty string, no scheduler will be started automatically.
 
 **`default_mode`:**
@@ -146,7 +167,7 @@ server_mode = []
 
 **`[scheds.scx_name]`:**
 
-* This section defines the custom flags for a specific scheduler. Replace `scx_name` with the actual name of the scheduler (e.g., `scx_bpfland`, `scx_rusty`, `scx_lavd`, `scx_flash`, `scx_p2dq`, `scx_rustland`).
+* This section defines the custom flags for a specific scheduler. Replace `scx_name` with the actual name of the scheduler (e.g., `scx_bpfland`, `scx_rusty`, `scx_lavd`, `scx_flash`, `scx_p2dq`, `scx_cosmos`).
 
 **`auto_mode`, `gaming_mode`, `lowlatency_mode`, `powersave_mode`, `server_mode`:**
 
@@ -159,9 +180,9 @@ server_mode = []
 The example configuration above shows how to set custom flags for different schedulers and modes, and how to configure `scx_cosmos` to start automatically on boot.
 
 * For `scx_bpfland`:
-    * Low Latency mode: `-m performance -w`
-    * Power Save mode: `-s 20000 -m powersave -I 100 -t 100`
-    * Server mode: `-s 20000 -S`
+    * Low Latency mode: `-m performance`
+    * Power Save mode: `-s 20000 -m powersave`
+    * Server mode: `-s 20000`
 * For `scx_rusty`:
     * No custom flags are defined, so the default flags for each mode will be used.
 * For `scx_lavd`:
@@ -171,7 +192,10 @@ The example configuration above shows how to set custom flags for different sche
     * Power Save mode: `--powersave --pinned-slice-us 500`
     * Server mode: `--performance --slice-min-us 3000 --slice-max-us 10000 --pinned-slice-us 3000`
 * For `scx_flash`:
-    * No custom flags are defined, so the default flags for each mode will be used.
+    * Gaming mode: `-m performance`
+    * Low Latency mode: `-m performance`
+    * Power Save mode: `-m powersave -I 100 -t 100`
+    * Server mode: `-s 20000`
 * For `scx_tickless`:
     * Gaming mode: `-f 5000 -s 5000`
     * Low Latency mode: `-f 5000 -s 1000`
@@ -182,14 +206,14 @@ The example configuration above shows how to set custom flags for different sche
     * Low Latency mode: `-y -f --task-slice true`
     * Power Save mode: `--sched-mode efficiency`
     * Server mode: `--keep-running`
-* For `scx_rustland`:
-    * No custom flags are defined, so the default flags for each mode will be used.
 * For `scx_cosmos`:
     * Gaming mode: `-s 700`
     * Low Latency mode: `-s 700 -m performance -w`
     * Power Save mode: `-m powersave`
 * For `scx_beerland`:
-    * No custom flags are defined, so the default flags for each mode will be used.
+    * Gaming mode: `-m performance`
+    * Low Latency mode: `-m performance`
+    * Power Save mode: `-m powersave`
 * For `scx_cake`:
     * No custom flags are defined, so the default flags for each mode will be used.
 * For `scx_pandemonium`:
@@ -201,6 +225,14 @@ The example configuration above shows how to set custom flags for different sche
 * For `scx_mlfq`:
     * No custom flags are defined, so the default flags for each mode will be used.
 * For `scx_eevdf`:
+    * No custom flags are defined, so the default flags for each mode will be used.
+* For `scx_rburst`:
+    * No custom flags are defined, so the default flags for each mode will be used.
+* For `scx_reevdf`:
+    * No custom flags are defined, so the default flags for each mode will be used.
+* For `scx_rlocal`:
+    * No custom flags are defined, so the default flags for each mode will be used.
+* For `scx_rvtime`:
     * No custom flags are defined, so the default flags for each mode will be used.
 
 ### Fallback Behavior

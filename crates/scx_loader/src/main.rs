@@ -143,7 +143,10 @@ impl ScxLoader {
             "scx_pandemonium",
             "scx_p2dq",
             "scx_tickless",
-            "scx_rustland",
+            "scx_rburst",
+            "scx_reevdf",
+            "scx_rlocal",
+            "scx_rvtime",
             "scx_rusty",
         ];
         builtin
