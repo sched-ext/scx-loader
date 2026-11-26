@@ -204,7 +204,6 @@ pub fn get_default_config() -> Config {
         SupportedSched::Flash,
         SupportedSched::P2DQ,
         SupportedSched::Tickless,
-        SupportedSched::Rustland,
         SupportedSched::Cosmos,
         SupportedSched::Beerland,
         SupportedSched::Cake,
@@ -213,6 +212,10 @@ pub fn get_default_config() -> Config {
         SupportedSched::Forge,
         SupportedSched::MLFQ,
         SupportedSched::EEVDF,
+        SupportedSched::Rburst,
+        SupportedSched::Reevdf,
+        SupportedSched::Rlocal,
+        SupportedSched::Rvtime,
     ];
     let scheds_map = HashMap::from(supported_scheds.map(init_default_config_entry));
     Config {
@@ -305,15 +308,22 @@ fn get_default_scx_flags_for_mode(
 ) -> Vec<&'static str> {
     match &scx_sched {
         SupportedSched::Bpfland => match sched_mode {
-            SchedMode::LowLatency => {
-                vec!["-m", "performance", "-w"]
-            }
-            SchedMode::PowerSave => {
-                vec!["-s", "20000", "-m", "powersave", "-I", "100", "-t", "100"]
-            }
-            SchedMode::Server => vec!["-s", "20000", "-S"],
+            SchedMode::LowLatency => vec!["-m", "performance"],
+            SchedMode::PowerSave => vec!["-s", "20000", "-m", "powersave"],
+            SchedMode::Server => vec!["-s", "20000"],
             SchedMode::Gaming => vec!["-m", "all"],
             SchedMode::Auto => vec!["-m", "auto"],
+        },
+        SupportedSched::Flash => match sched_mode {
+            SchedMode::Gaming | SchedMode::LowLatency => vec!["-m", "performance"],
+            SchedMode::PowerSave => vec!["-m", "powersave", "-I", "100", "-t", "100"],
+            SchedMode::Server => vec!["-s", "20000"],
+            SchedMode::Auto => vec![],
+        },
+        SupportedSched::Beerland => match sched_mode {
+            SchedMode::Gaming | SchedMode::LowLatency => vec!["-m", "performance"],
+            SchedMode::PowerSave => vec!["-m", "powersave"],
+            SchedMode::Server | SchedMode::Auto => vec![],
         },
         SupportedSched::Lavd => match sched_mode {
             SchedMode::Gaming | SchedMode::LowLatency => {
@@ -354,15 +364,16 @@ fn get_default_scx_flags_for_mode(
         // The below Schedulers haven't defined any modes. Custom schedulers
         // only have the modes their config entry sets.
         SupportedSched::Rusty
-        | SupportedSched::Rustland
-        | SupportedSched::Beerland
         | SupportedSched::Pandemonium
-        | SupportedSched::Flash
         | SupportedSched::Flow
         | SupportedSched::Forge
         | SupportedSched::Cake
         | SupportedSched::MLFQ
         | SupportedSched::EEVDF
+        | SupportedSched::Rburst
+        | SupportedSched::Reevdf
+        | SupportedSched::Rlocal
+        | SupportedSched::Rvtime
         | SupportedSched::Custom(_) => vec![],
     }
 }
