@@ -3,22 +3,22 @@ mod cli;
 use clap::Parser;
 use cli::{Cli, Commands};
 use colored::Colorize;
-use scx_loader::{SchedMode, SchedName, dbus::LoaderClientProxyBlocking};
+use scx_loader::{SchedMode, SchedName, dbus::LoaderClientProxy};
 use std::process::exit;
-use zbus::blocking::Connection;
+use zbus::Connection;
 
-fn cmd_get(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::error::Error>> {
-    let current_scheduler: String = scx_loader.current_scheduler()?;
+async fn cmd_get(scx_loader: &LoaderClientProxy<'_>) -> Result<(), Box<dyn std::error::Error>> {
+    let current_scheduler: String = scx_loader.current_scheduler().await?;
 
     if current_scheduler.as_str() == "unknown" {
         println!("no scx scheduler running");
     } else {
         let sched = SchedName::try_from(current_scheduler.as_str())?;
-        let current_args: Vec<String> = scx_loader.current_scheduler_args()?;
+        let current_args: Vec<String> = scx_loader.current_scheduler_args().await?;
 
         if current_args.is_empty() {
-            let sched_mode: SchedMode = scx_loader.scheduler_mode()?;
-            let mode_configured = mode_is_configured(scx_loader, &sched, sched_mode);
+            let sched_mode: SchedMode = scx_loader.scheduler_mode().await?;
+            let mode_configured = mode_is_configured(scx_loader, &sched, sched_mode).await;
             report_mode_result("running", &sched, sched_mode, mode_configured);
         } else {
             println!(
@@ -30,9 +30,10 @@ fn cmd_get(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-fn cmd_list(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::error::Error>> {
+async fn cmd_list(scx_loader: &LoaderClientProxy<'_>) -> Result<(), Box<dyn std::error::Error>> {
     let supported_scheds = scx_loader
-        .supported_schedulers()?
+        .supported_schedulers()
+        .await?
         .iter()
         .map(|s| remove_scx_prefix(s))
         .collect::<Vec<String>>();
@@ -40,16 +41,16 @@ fn cmd_list(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-fn cmd_modes(
-    scx_loader: &LoaderClientProxyBlocking,
+async fn cmd_modes(
+    scx_loader: &LoaderClientProxy<'_>,
     sched_name: &str,
     show_args: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let sched: SchedName = validate_sched(scx_loader, sched_name)?;
+    let sched: SchedName = validate_sched(scx_loader, sched_name).await?;
 
     if show_args {
         let mode_args: Vec<(SchedMode, Vec<String>)> =
-            scx_loader.scheduler_mode_args_by_name(&sched)?;
+            scx_loader.scheduler_mode_args_by_name(&sched).await?;
         println!("configuration for {sched:?}:");
         for (mode, args) in mode_args {
             if args.is_empty() {
@@ -63,7 +64,7 @@ fn cmd_modes(
             }
         }
     } else {
-        let modes: Vec<SchedMode> = scx_loader.scheduler_modes_by_name(&sched)?;
+        let modes: Vec<SchedMode> = scx_loader.scheduler_modes_by_name(&sched).await?;
         println!("modes configured for {sched:?}: {modes:?}");
         println!(
             "(unlisted modes run with {sched:?}'s own defaults; use --show-args to see them all)"
@@ -87,8 +88,8 @@ fn cmd_modes(
 /// `Auto` always counts as configured (it *is* the scheduler's own
 /// defaults), and query failures count as configured too (fail-open), so
 /// callers never block or mislead on a transient D-Bus error.
-fn mode_is_configured(
-    scx_loader: &LoaderClientProxyBlocking,
+async fn mode_is_configured(
+    scx_loader: &LoaderClientProxy<'_>,
     sched: &SchedName,
     mode: SchedMode,
 ) -> bool {
@@ -97,15 +98,16 @@ fn mode_is_configured(
     }
     scx_loader
         .scheduler_modes_by_name(sched)
+        .await
         .map_or(true, |modes| modes.contains(&mode))
 }
 
-fn check_mode_configured(
-    scx_loader: &LoaderClientProxyBlocking,
+async fn check_mode_configured(
+    scx_loader: &LoaderClientProxy<'_>,
     sched: &SchedName,
     mode: SchedMode,
 ) -> bool {
-    let is_configured = mode_is_configured(scx_loader, sched, mode);
+    let is_configured = mode_is_configured(scx_loader, sched, mode).await;
     if !is_configured {
         eprintln!(
             "{} {sched:?} has no configured arguments for {mode:?} mode; it will run with its own defaults",
@@ -115,14 +117,14 @@ fn check_mode_configured(
     is_configured
 }
 
-fn cmd_start(
-    scx_loader: &LoaderClientProxyBlocking,
+async fn cmd_start(
+    scx_loader: &LoaderClientProxy<'_>,
     sched_name: &str,
     mode_name: Option<SchedMode>,
     args: Option<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Verify scx_loader is not running a scheduler
-    let current_scheduler = scx_loader.current_scheduler()?;
+    let current_scheduler = scx_loader.current_scheduler().await?;
     if current_scheduler != "unknown" {
         eprintln!(
             "{} scx scheduler already running, use '{}' instead of '{}'",
@@ -134,18 +136,20 @@ fn cmd_start(
         exit(1);
     }
 
-    let sched: SchedName = validate_sched(scx_loader, sched_name)?;
+    let sched: SchedName = validate_sched(scx_loader, sched_name).await?;
     let mode: SchedMode = mode_name.unwrap_or(SchedMode::Auto);
     if let Some(raw_args) = args {
         let args = validate_args(&raw_args);
-        scx_loader.start_scheduler_with_args_by_name(&sched, &args)?;
+        scx_loader
+            .start_scheduler_with_args_by_name(&sched, &args)
+            .await?;
         println!(
             "started {sched:?} with arguments \"{}\"",
             format_scheduler_args(&args)
         );
     } else {
-        let mode_configured = check_mode_configured(scx_loader, &sched, mode);
-        scx_loader.start_scheduler_by_name(&sched, mode)?;
+        let mode_configured = check_mode_configured(scx_loader, &sched, mode).await;
+        scx_loader.start_scheduler_by_name(&sched, mode).await?;
         report_mode_result("started", &sched, mode, mode_configured);
     }
     Ok(())
@@ -166,26 +170,26 @@ fn report_mode_result(action: &str, sched: &SchedName, mode: SchedMode, mode_con
 /// lazily via `fetch_current_mode` so that callers only pay for the D-Bus
 /// round-trip when it's actually needed (no explicit mode was requested and
 /// we're not switching to a different scheduler).
-fn resolve_switch_mode<E>(
+async fn resolve_switch_mode<E>(
     requested_mode: Option<SchedMode>,
     switching_scheduler: bool,
-    fetch_current_mode: impl FnOnce() -> Result<SchedMode, E>,
+    fetch_current_mode: impl AsyncFnOnce() -> Result<SchedMode, E>,
 ) -> Result<SchedMode, E> {
     match requested_mode {
         Some(mode) => Ok(mode),
         None if switching_scheduler => Ok(SchedMode::Auto),
-        None => fetch_current_mode(),
+        None => fetch_current_mode().await,
     }
 }
 
-fn cmd_switch(
-    scx_loader: &LoaderClientProxyBlocking,
+async fn cmd_switch(
+    scx_loader: &LoaderClientProxy<'_>,
     sched_name: Option<&str>,
     mode_name: Option<SchedMode>,
     args: Option<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Verify scx_loader is running a scheduler
-    let current_sched_name = scx_loader.current_scheduler()?;
+    let current_sched_name = scx_loader.current_scheduler().await?;
     if current_sched_name == "unknown" {
         eprintln!(
             "{} no scx scheduler running, use '{}' instead of '{}'",
@@ -206,46 +210,49 @@ fn cmd_switch(
     // a comparison whose answer is already known to be `false`.
     let (sched, switching_scheduler): (SchedName, bool) = match sched_name {
         Some(sched_name) => {
-            let sched = validate_sched(scx_loader, sched_name)?;
+            let sched = validate_sched(scx_loader, sched_name).await?;
             let switching_scheduler = sched != current_sched;
             (sched, switching_scheduler)
         }
         None => (current_sched, false),
     };
 
-    let mode = resolve_switch_mode(mode_name, switching_scheduler, || {
-        scx_loader.scheduler_mode()
-    })?;
+    let mode = resolve_switch_mode(mode_name, switching_scheduler, async || {
+        scx_loader.scheduler_mode().await
+    })
+    .await?;
     if let Some(raw_args) = args {
         let args = validate_args(&raw_args);
-        scx_loader.switch_scheduler_with_args_by_name(&sched, &args)?;
+        scx_loader
+            .switch_scheduler_with_args_by_name(&sched, &args)
+            .await?;
         println!(
             "switched to {sched:?} with arguments \"{}\"",
             format_scheduler_args(&args)
         );
     } else {
-        let mode_configured = check_mode_configured(scx_loader, &sched, mode);
-        scx_loader.switch_scheduler_by_name(&sched, mode)?;
+        let mode_configured = check_mode_configured(scx_loader, &sched, mode).await;
+        scx_loader.switch_scheduler_by_name(&sched, mode).await?;
         report_mode_result("switched to", &sched, mode, mode_configured);
     }
     Ok(())
 }
 
-fn cmd_stop(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::error::Error>> {
-    scx_loader.stop_scheduler()?;
+async fn cmd_stop(scx_loader: &LoaderClientProxy<'_>) -> Result<(), Box<dyn std::error::Error>> {
+    scx_loader.stop_scheduler().await?;
     println!("stopped");
     Ok(())
 }
 
-fn cmd_restart(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::error::Error>> {
-    scx_loader.restart_scheduler()?;
+async fn cmd_restart(scx_loader: &LoaderClientProxy<'_>) -> Result<(), Box<dyn std::error::Error>> {
+    scx_loader.restart_scheduler().await?;
     println!("restarted");
     Ok(())
 }
 
-fn cmd_restore(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::error::Error>> {
+async fn cmd_restore(scx_loader: &LoaderClientProxy<'_>) -> Result<(), Box<dyn std::error::Error>> {
     // Check if a default scheduler is configured
-    let default_scheduler = scx_loader.default_scheduler()?;
+    let default_scheduler = scx_loader.default_scheduler().await?;
     if default_scheduler == "unknown" {
         eprintln!("{} no default scheduler configured", "error:".red().bold());
         eprintln!(
@@ -255,12 +262,12 @@ fn cmd_restore(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std
         exit(1);
     }
 
-    scx_loader.restore_default()?;
+    scx_loader.restore_default().await?;
 
     // Fetch the default mode for display
-    let default_mode: SchedMode = scx_loader.default_mode()?;
+    let default_mode: SchedMode = scx_loader.default_mode().await?;
     let sched = SchedName::try_from(default_scheduler.as_str())?;
-    let mode_configured = mode_is_configured(scx_loader, &sched, default_mode);
+    let mode_configured = mode_is_configured(scx_loader, &sched, default_mode).await;
     report_mode_result(
         "restored default scheduler",
         &sched,
@@ -273,20 +280,27 @@ fn cmd_restore(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let conn = Connection::system()?;
-    let scx_loader = LoaderClientProxyBlocking::new(&conn)?;
+    // zbus has no blocking API anymore.
+    zbus::block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = Connection::system().await?;
+    let scx_loader = LoaderClientProxy::new(&conn).await?;
 
     match cli.command {
-        Commands::Get => cmd_get(&scx_loader)?,
-        Commands::List => cmd_list(&scx_loader)?,
-        Commands::Modes { args } => cmd_modes(&scx_loader, &args.sched, args.show_args)?,
-        Commands::Start { args } => cmd_start(&scx_loader, &args.sched, args.mode, args.args)?,
-        Commands::Switch { args } => {
-            cmd_switch(&scx_loader, args.sched.as_deref(), args.mode, args.args)?;
+        Commands::Get => cmd_get(&scx_loader).await?,
+        Commands::List => cmd_list(&scx_loader).await?,
+        Commands::Modes { args } => cmd_modes(&scx_loader, &args.sched, args.show_args).await?,
+        Commands::Start { args } => {
+            cmd_start(&scx_loader, &args.sched, args.mode, args.args).await?;
         }
-        Commands::Stop => cmd_stop(&scx_loader)?,
-        Commands::Restart => cmd_restart(&scx_loader)?,
-        Commands::Restore => cmd_restore(&scx_loader)?,
+        Commands::Switch { args } => {
+            cmd_switch(&scx_loader, args.sched.as_deref(), args.mode, args.args).await?;
+        }
+        Commands::Stop => cmd_stop(&scx_loader).await?,
+        Commands::Restart => cmd_restart(&scx_loader).await?,
+        Commands::Restore => cmd_restore(&scx_loader).await?,
     }
 
     Ok(())
@@ -424,11 +438,11 @@ fn resolve_sched_name(
         .map_err(|_| SchedNameError::UnsupportedByClient)
 }
 
-fn validate_sched(
-    scx_loader: &LoaderClientProxyBlocking,
+async fn validate_sched(
+    scx_loader: &LoaderClientProxy<'_>,
     sched: &str,
 ) -> Result<SchedName, Box<dyn std::error::Error>> {
-    let raw_supported_scheds: Vec<String> = scx_loader.supported_schedulers()?;
+    let raw_supported_scheds: Vec<String> = scx_loader.supported_schedulers().await?;
     match resolve_sched_name(sched, &raw_supported_scheds) {
         Ok(resolved) => Ok(resolved),
         Err(SchedNameError::UnknownName) => {
@@ -464,35 +478,35 @@ mod tests {
 
     #[test]
     fn switch_to_different_scheduler_defaults_to_auto() {
-        let mode = resolve_switch_mode(
+        let mode = zbus::block_on(resolve_switch_mode(
             None,
             true,
-            || -> Result<SchedMode, Box<dyn std::error::Error>> {
+            async || -> Result<SchedMode, Box<dyn std::error::Error>> {
                 panic!("current mode should not be fetched when switching scheduler")
             },
-        )
+        ))
         .unwrap();
         assert_eq!(mode, SchedMode::Auto);
     }
 
     #[test]
     fn switch_within_same_scheduler_keeps_current_mode() {
-        let mode: SchedMode = resolve_switch_mode(None, false, || {
+        let mode: SchedMode = zbus::block_on(resolve_switch_mode(None, false, async || {
             Ok::<_, Box<dyn std::error::Error>>(SchedMode::Gaming)
-        })
+        }))
         .unwrap();
         assert_eq!(mode, SchedMode::Gaming);
     }
 
     #[test]
     fn explicit_switch_mode_always_wins() {
-        let mode = resolve_switch_mode(
+        let mode = zbus::block_on(resolve_switch_mode(
             Some(SchedMode::PowerSave),
             true,
-            || -> Result<SchedMode, Box<dyn std::error::Error>> {
+            async || -> Result<SchedMode, Box<dyn std::error::Error>> {
                 panic!("current mode should not be fetched when an explicit mode is given")
             },
-        )
+        ))
         .unwrap();
         assert_eq!(mode, SchedMode::PowerSave);
     }
