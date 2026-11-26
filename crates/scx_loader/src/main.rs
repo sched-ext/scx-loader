@@ -85,6 +85,19 @@ struct Args {
 const ROOT_ACTION_ID: &str = "org.scx.loader.manage-schedulers";
 
 impl ScxLoader {
+    /// A loader with no scheduler running, sending its requests to `channel`.
+    fn new(config: config::Config, channel: UnboundedSender<ScxMessage>) -> Self {
+        Self {
+            current_scx: None,
+            current_mode: SchedMode::Auto,
+            current_args: None,
+            channel,
+            default_sched: config.default_sched.clone(),
+            default_mode: config.default_mode.unwrap_or(SchedMode::Auto),
+            config,
+        }
+    }
+
     /// Rejects a custom scheduler name the config doesn't define. Any name
     /// of the right form deserializes, so every method taking one checks it.
     fn check_known_sched(&self, scx_name: &SchedName) -> zbus::fdo::Result<()> {
@@ -454,15 +467,7 @@ async fn main() -> Result<()> {
         .object_server()
         .at(
             "/org/scx/Loader",
-            ScxLoader {
-                current_scx: None,
-                current_mode: SchedMode::Auto,
-                current_args: None,
-                channel: channel.clone(),
-                default_sched: config.default_sched.clone(),
-                default_mode: config.default_mode.unwrap_or(SchedMode::Auto),
-                config: config.clone(),
-            },
+            ScxLoader::new(config.clone(), channel.clone()),
         )
         .await?;
 
@@ -774,7 +779,7 @@ async fn check_authorization(
             &subject,
             action_id,
             &std::collections::HashMap::new(),
-            CheckAuthorizationFlags::AllowUserInteraction.into(),
+            CheckAuthorizationFlags::ALLOW_USER_INTERACTION,
             "",
         )
         .await?;

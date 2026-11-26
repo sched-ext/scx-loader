@@ -13,16 +13,14 @@ use std::str::FromStr;
 
 use serde::Deserialize;
 use serde::Serialize;
-use zvariant::OwnedValue;
-use zvariant::Type;
-use zvariant::Value;
+use zbus::Type;
 
 /// A built-in scheduler `scx_loader` can run.
 ///
 /// It goes over D-Bus and into the config as its name, e.g. `"scx_lavd"`.
 /// See [`SchedName`] for schedulers defined in the config.
 #[derive(Clone, PartialEq, Type)]
-#[zvariant(signature = "s")]
+#[zbus(signature = "s")]
 #[non_exhaustive]
 pub enum SupportedSched {
     Bpfland,
@@ -168,7 +166,7 @@ impl From<SupportedSched> for &str {
 /// `scx_` followed by lowercase ASCII letters, digits and `_`,
 /// and not the name of a built-in scheduler.
 #[derive(Clone, PartialEq, Eq, Hash, Type)]
-#[zvariant(signature = "s")]
+#[zbus(signature = "s")]
 pub struct CustomSchedName(String);
 
 impl CustomSchedName {
@@ -233,7 +231,7 @@ impl TryFrom<&str> for CustomSchedName {
 /// `Custom`. Such a scheduler can only be started if the config defines it
 /// with a `path`.
 #[derive(Clone, PartialEq, Type)]
-#[zvariant(signature = "s")]
+#[zbus(signature = "s")]
 #[non_exhaustive]
 pub enum SchedName {
     Builtin(SupportedSched),
@@ -311,7 +309,7 @@ impl TryFrom<&str> for SchedName {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Type, Value, OwnedValue, PartialEq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Type, PartialEq)]
 pub enum SchedMode {
     /// Default values for the scheduler
     Auto = 0,
@@ -362,8 +360,23 @@ impl From<SchedMode> for &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zvariant::serialized::Context;
-    use zvariant::{LE, to_bytes};
+    use zbus::wire::serialized::Context;
+    use zbus::wire::{LE, to_bytes};
+
+    fn encode<T: Serialize + Type>(value: &T) -> (String, String) {
+        let encoded = to_bytes(Context::new(LE, 0), value).unwrap();
+        (T::SIGNATURE.to_string(), hex(encoded.bytes()))
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+
+        bytes.iter().fold(String::new(), |mut out, b| {
+            write!(out, "{b:02x}").unwrap();
+            out
+        })
+    }
+
 
     #[test]
     fn parses_builtin_and_custom_names() {
@@ -414,7 +427,7 @@ mod tests {
         assert_eq!(CustomSchedName::SIGNATURE, "s");
         assert_eq!(SchedName::SIGNATURE, "s");
 
-        let ctxt = Context::new_dbus(LE, 0);
+        let ctxt = Context::new(LE, 0);
         let encoded = to_bytes(ctxt, &SupportedSched::Lavd).unwrap();
         assert_eq!(encoded.deserialize::<String>().unwrap().0, "scx_lavd");
         assert_eq!(
@@ -430,6 +443,58 @@ mod tests {
             assert_eq!(encoded.deserialize::<String>().unwrap().0, sched.as_str());
             assert_eq!(encoded.deserialize::<SchedName>().unwrap().0, sched);
         }
+    }
+
+    #[test]
+    fn dbus_wire_format_is_pinned() {
+        // hardcoded to catch signature val during zbus upgrades
+        let lavd = ("s".to_owned(), "080000007363785f6c61766400".to_owned());
+        let mine = ("s".to_owned(), "080000007363785f6d696e6500".to_owned());
+        assert_eq!(encode(&SupportedSched::Lavd), lavd);
+        assert_eq!(encode(&SchedName::Builtin(SupportedSched::Lavd)), lavd);
+        assert_eq!(encode(&"scx_mine".parse::<SchedName>().unwrap()), mine);
+        assert_eq!(
+            encode(&"scx_mine".parse::<CustomSchedName>().unwrap()),
+            mine
+        );
+
+        let modes = [
+            SchedMode::Auto,
+            SchedMode::Gaming,
+            SchedMode::PowerSave,
+            SchedMode::LowLatency,
+            SchedMode::Server,
+        ];
+        for (index, mode) in (0u32..).zip(modes) {
+            let expected = ("u".to_owned(), hex(&index.to_le_bytes()));
+            assert_eq!(encode(&mode), expected, "{mode:?}");
+        }
+        assert_eq!(
+            encode(&modes.to_vec()),
+            (
+                "au".to_owned(),
+                "140000000000000001000000020000000300000004000000".to_owned()
+            )
+        );
+
+        let mode_args: Vec<(SchedMode, Vec<String>)> = vec![
+            (SchedMode::Auto, vec![]),
+            (SchedMode::Gaming, vec!["-m".into(), "performance".into()]),
+            (SchedMode::Server, vec!["--x".into()]),
+        ];
+        assert_eq!(
+            encode(&mode_args),
+            (
+                "a(uas)".to_owned(),
+                concat!(
+                    "38000000000000000000000000000000",
+                    "0100000018000000020000002d6d0000",
+                    "0b000000706572666f726d616e636500",
+                    "0400000008000000030000002d2d7800",
+                )
+                .to_owned()
+            )
+        );
     }
 
     #[test]
