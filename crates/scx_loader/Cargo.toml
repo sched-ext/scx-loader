@@ -8,20 +8,19 @@ description = "DBUS on-demand loader of sched-ext schedulers"
 license = "GPL-2.0-only"
 
 [dependencies]
-anyhow = "1.0.104"
-clap = { version = "4.6.6", features = ["derive", "env", "unicode", "wrap_help"] }
+anyhow = "1.0.105"
+clap = { version = "4.6.10", features = ["derive", "env", "unicode", "wrap_help"] }
 colored = "3.1.1"
 ctrlc = { version = "3.5", features = ["termination"] }
-log = "0.4.34"
-nix = { features = ["process", "signal"], default-features = false, version = "0.31.3" }
+log = "0.4.35"
+nix = { features = ["process", "signal"], default-features = false, version = "0.32.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 sysinfo = "0.38.4"
-tokio = { version = "1.53.1", features = ["macros", "sync", "rt-multi-thread", "process"] }
-tokio-util = "0.7.19"
-toml = "1.1.5"
-zbus = { version = "5.19.0", features = ["tokio"], default-features = false }
-zbus_polkit = { version = "5.1.0", features = ["tokio"], default-features = false }
-zvariant = "5.15"
+tokio = { version = "1.54.1", features = ["macros", "sync", "rt-multi-thread", "process"] }
+tokio-util = "0.7.20"
+toml = "1.2.3"
+zbus = { version = "6.5.0", features = ["tokio", "proxy", "service"], default-features = false }
+zbus_polkit = { version = "7.0.0", features = ["tokio"], default-features = false }
 
 [lib]
 path = "src/lib.rs"
