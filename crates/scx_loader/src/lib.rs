@@ -377,7 +377,6 @@ mod tests {
         })
     }
 
-
     #[test]
     fn parses_builtin_and_custom_names() {
         assert_eq!(
