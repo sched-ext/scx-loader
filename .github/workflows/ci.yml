@@ -34,28 +34,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # debian stable has 1.85.0
-        rust: [stable, 1.85.0]
+        rust: [stable, '1.91']
     timeout-minutes: 45
+    env:
+      # rust-toolchain.toml pins `stable`.
+      RUSTUP_TOOLCHAIN: ${{matrix.rust}}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{matrix.rust}}
+      - run: rustc --version
       - run: cargo build --verbose
       - run: cargo test --verbose
 
   clippy:
     name: Clippy
+    needs: pre_ci
+    if: needs.pre_ci.outputs.continue
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@beta
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --tests -- -Dclippy::all -Dclippy::pedantic
+      - run: cargo clippy --workspace --all-targets -- -Dclippy::all -Dclippy::pedantic
 
   format:
     name: rustfmt
