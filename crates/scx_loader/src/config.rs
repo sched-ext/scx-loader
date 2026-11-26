@@ -14,12 +14,14 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::SchedMode;
+use crate::SchedName;
 use crate::SupportedSched;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct Config {
-    pub default_sched: Option<SupportedSched>,
+    pub default_sched: Option<SchedName>,
     pub default_mode: Option<SchedMode>,
     /// Allow `[scheds.NAME]` entries with a `path`, which define schedulers
     /// that aren't built in. Off by default.
@@ -28,6 +30,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Sched {
     /// Absolute path of the binary. Only allowed for custom schedulers,
     /// i.e. names that aren't built in, and required for them.
@@ -38,6 +41,45 @@ pub struct Sched {
     pub lowlatency_mode: Option<Vec<String>>,
     pub powersave_mode: Option<Vec<String>>,
     pub server_mode: Option<Vec<String>>,
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for crate::SupportedSched {}
+    impl Sealed for crate::SchedName {}
+}
+
+/// A scheduler the functions in this module accept: a [`SupportedSched`] or
+/// a [`SchedName`]. It is sealed, so it can't be implemented outside this
+/// crate.
+pub trait SchedKey: sealed::Sealed {
+    /// The scheduler's name, which is also its `[scheds.NAME]` key.
+    fn name(&self) -> &str;
+    /// The built-in scheduler, or `None` for a custom one.
+    fn builtin(&self) -> Option<&SupportedSched>;
+}
+
+impl SchedKey for SupportedSched {
+    fn name(&self) -> &str {
+        self.as_str()
+    }
+
+    fn builtin(&self) -> Option<&SupportedSched> {
+        Some(self)
+    }
+}
+
+impl SchedKey for SchedName {
+    fn name(&self) -> &str {
+        self.as_str()
+    }
+
+    fn builtin(&self) -> Option<&SupportedSched> {
+        match self {
+            SchedName::Builtin(builtin) => Some(builtin),
+            SchedName::Custom(_) => None,
+        }
+    }
 }
 
 /// Initialize config from first found config path, overwise fallback to default config
@@ -123,9 +165,9 @@ fn validate_config(config: &Config) -> Result<()> {
                  `allow_custom_scheds = true`"
             );
         }
-        match name.parse::<SupportedSched>() {
-            Ok(SupportedSched::Custom(_)) => {}
-            Ok(_) => anyhow::bail!(
+        match name.parse::<SchedName>() {
+            Ok(SchedName::Custom(_)) => {}
+            Ok(SchedName::Builtin(_)) => anyhow::bail!(
                 "[scheds.{name}]: `path` is only allowed for custom schedulers, and {name} is \
                  built in"
             ),
@@ -161,21 +203,18 @@ fn custom_sched_path<'a>(config: &'a Config, name: &str) -> Option<&'a String> {
 /// Returns `true` if `scx_sched` can be started: it's built in, or the config
 /// defines it as a custom scheduler.
 #[must_use]
-pub fn is_known_sched(config: &Config, scx_sched: &SupportedSched) -> bool {
-    match scx_sched {
-        SupportedSched::Custom(name) => custom_sched_path(config, name).is_some(),
-        _ => true,
-    }
+pub fn is_known_sched(config: &Config, scx_sched: &impl SchedKey) -> bool {
+    scx_sched.builtin().is_some() || custom_sched_path(config, scx_sched.name()).is_some()
 }
 
 /// Returns the program to run for `scx_sched`: the binary name of a built-in
 /// scheduler, looked up in `PATH`, or the configured path of a custom one.
 /// Returns `None` for a custom scheduler the config doesn't define.
 #[must_use]
-pub fn get_sched_program(config: &Config, scx_sched: &SupportedSched) -> Option<String> {
-    match scx_sched {
-        SupportedSched::Custom(name) => custom_sched_path(config, name).cloned(),
-        builtin => Some(builtin.as_str().to_owned()),
+pub fn get_sched_program(config: &Config, scx_sched: &impl SchedKey) -> Option<String> {
+    match scx_sched.builtin() {
+        Some(builtin) => Some(builtin.as_str().to_owned()),
+        None => custom_sched_path(config, scx_sched.name()).cloned(),
     }
 }
 
@@ -229,25 +268,36 @@ pub fn get_default_config() -> Config {
 /// Get the scx flags for the given sched mode
 pub fn get_scx_flags_for_mode(
     config: &Config,
-    scx_sched: &SupportedSched,
+    scx_sched: &impl SchedKey,
     sched_mode: SchedMode,
 ) -> Vec<String> {
-    if let Some(sched_config) = config.scheds.get(scx_sched.as_str()) {
+    if let Some(sched_config) = config.scheds.get(scx_sched.name()) {
         let scx_flags = extract_scx_flags_from_config(sched_config, sched_mode);
 
         // try to exact flags from config, otherwise fallback to hardcoded default
         scx_flags.unwrap_or({
-            get_default_scx_flags_for_mode(scx_sched, sched_mode)
+            get_builtin_scx_flags_for_mode(scx_sched, sched_mode)
                 .into_iter()
                 .map(String::from)
                 .collect()
         })
     } else {
-        get_default_scx_flags_for_mode(scx_sched, sched_mode)
+        get_builtin_scx_flags_for_mode(scx_sched, sched_mode)
             .into_iter()
             .map(String::from)
             .collect()
     }
+}
+
+/// Get the hardcoded scx flags for the given sched mode.
+fn get_builtin_scx_flags_for_mode(
+    scx_sched: &impl SchedKey,
+    sched_mode: SchedMode,
+) -> Vec<&'static str> {
+    scx_sched
+        .builtin()
+        .map(|builtin| get_default_scx_flags_for_mode(builtin, sched_mode))
+        .unwrap_or_default()
 }
 
 /// Extract the scx flags from config
@@ -361,8 +411,7 @@ fn get_default_scx_flags_for_mode(
             SchedMode::PowerSave => vec!["-m", "powersave"],
             SchedMode::Server | SchedMode::Auto => vec![],
         },
-        // The below Schedulers haven't defined any modes. Custom schedulers
-        // only have the modes their config entry sets.
+        // The below Schedulers haven't defined any modes
         SupportedSched::Rusty
         | SupportedSched::Pandemonium
         | SupportedSched::Flow
@@ -373,8 +422,7 @@ fn get_default_scx_flags_for_mode(
         | SupportedSched::Rburst
         | SupportedSched::Reevdf
         | SupportedSched::Rlocal
-        | SupportedSched::Rvtime
-        | SupportedSched::Custom(_) => vec![],
+        | SupportedSched::Rvtime => vec![],
     }
 }
 
@@ -394,7 +442,7 @@ const ALL_MODES: [SchedMode; 5] = [
 /// `Auto` is never considered to be lacking args: it represents the
 /// scheduler's own defaults, so an empty argument list is expected and fine.
 #[must_use]
-pub fn mode_lacks_args(config: &Config, scx_sched: &SupportedSched, sched_mode: SchedMode) -> bool {
+pub fn mode_lacks_args(config: &Config, scx_sched: &impl SchedKey, sched_mode: SchedMode) -> bool {
     if sched_mode == SchedMode::Auto {
         return false;
     }
@@ -410,7 +458,7 @@ pub fn mode_lacks_args(config: &Config, scx_sched: &SupportedSched, sched_mode: 
 /// actually change scheduler behavior for a given scheduler, instead of
 /// `scx_loader` hard-rejecting "unconfigured" modes.
 #[must_use]
-pub fn get_configured_modes(config: &Config, scx_sched: &SupportedSched) -> Vec<SchedMode> {
+pub fn get_configured_modes(config: &Config, scx_sched: &impl SchedKey) -> Vec<SchedMode> {
     ALL_MODES
         .into_iter()
         .filter(|&mode| !mode_lacks_args(config, scx_sched, mode))
@@ -429,7 +477,7 @@ pub fn get_configured_modes(config: &Config, scx_sched: &SupportedSched) -> Vec<
 #[must_use]
 pub fn get_all_mode_args(
     config: &Config,
-    scx_sched: &SupportedSched,
+    scx_sched: &impl SchedKey,
 ) -> Vec<(SchedMode, Vec<String>)> {
     ALL_MODES
         .into_iter()
@@ -452,6 +500,10 @@ mod tests {
     /// Lives in its own file (rather than an inline string) so it's easy to
     /// read/edit as real TOML and doesn't bloat the test function.
     const DEFAULT_CONFIG_TOML: &str = include_str!("../default_config.toml");
+
+    fn custom(name: &str) -> SchedName {
+        name.parse().unwrap()
+    }
 
     #[test]
     fn test_default_config() {
@@ -633,10 +685,6 @@ server_mode = ["--profile", "gaming"]
                 ),
             ]
         );
-    }
-
-    fn custom(name: &str) -> SupportedSched {
-        SupportedSched::Custom(name.to_owned())
     }
 
     #[test]

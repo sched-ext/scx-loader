@@ -6,6 +6,7 @@
 // GNU General Public License version 2.
 
 use crate::SchedMode;
+use crate::SchedName;
 use crate::SupportedSched;
 
 #[zbus::proxy(
@@ -17,10 +18,26 @@ pub trait LoaderClient {
     /// Starts the specified scheduler with the given mode.
     fn start_scheduler(&self, scx_name: SupportedSched, sched_mode: SchedMode) -> zbus::Result<()>;
 
+    /// Like `start_scheduler`, but also takes a custom scheduler.
+    #[zbus(name = "StartScheduler")]
+    fn start_scheduler_by_name(
+        &self,
+        scx_name: &SchedName,
+        sched_mode: SchedMode,
+    ) -> zbus::Result<()>;
+
     /// Starts the specified scheduler with the provided arguments.
     fn start_scheduler_with_args(
         &self,
         scx_name: SupportedSched,
+        scx_args: &[String],
+    ) -> zbus::Result<()>;
+
+    /// Like `start_scheduler_with_args`, but also takes a custom scheduler.
+    #[zbus(name = "StartSchedulerWithArgs")]
+    fn start_scheduler_with_args_by_name(
+        &self,
+        scx_name: &SchedName,
         scx_args: &[String],
     ) -> zbus::Result<()>;
 
@@ -33,12 +50,28 @@ pub trait LoaderClient {
     fn switch_scheduler(&self, scx_name: SupportedSched, sched_mode: SchedMode)
     -> zbus::Result<()>;
 
+    /// Like `switch_scheduler`, but also takes a custom scheduler.
+    #[zbus(name = "SwitchScheduler")]
+    fn switch_scheduler_by_name(
+        &self,
+        scx_name: &SchedName,
+        sched_mode: SchedMode,
+    ) -> zbus::Result<()>;
+
     /// Switches to the specified scheduler with the provided arguments. This
     /// method will stop the currently running scheduler (if any) and then
     /// start the new scheduler with the given arguments.
     fn switch_scheduler_with_args(
         &self,
         scx_name: SupportedSched,
+        scx_args: &[String],
+    ) -> zbus::Result<()>;
+
+    /// Like `switch_scheduler_with_args`, but also takes a custom scheduler.
+    #[zbus(name = "SwitchSchedulerWithArgs")]
+    fn switch_scheduler_with_args_by_name(
+        &self,
+        scx_name: &SchedName,
         scx_args: &[String],
     ) -> zbus::Result<()>;
 
@@ -94,6 +127,10 @@ pub trait LoaderClient {
     /// defaults and is valid even without explicit arguments.
     fn scheduler_modes(&self, scx_name: SupportedSched) -> zbus::Result<Vec<SchedMode>>;
 
+    /// Like `scheduler_modes`, but also takes a custom scheduler.
+    #[zbus(name = "SchedulerModes")]
+    fn scheduler_modes_by_name(&self, scx_name: &SchedName) -> zbus::Result<Vec<SchedMode>>;
+
     /// Returns the resolved arguments for every mode of `scx_name`, in a
     /// stable order. A mode with no configured arguments comes back with an
     /// empty list, meaning it would just run `scx_name` with its own
@@ -101,5 +138,12 @@ pub trait LoaderClient {
     fn scheduler_mode_args(
         &self,
         scx_name: SupportedSched,
+    ) -> zbus::Result<Vec<(SchedMode, Vec<String>)>>;
+
+    /// Like `scheduler_mode_args`, but also takes a custom scheduler.
+    #[zbus(name = "SchedulerModeArgs")]
+    fn scheduler_mode_args_by_name(
+        &self,
+        scx_name: &SchedName,
     ) -> zbus::Result<Vec<(SchedMode, Vec<String>)>>;
 }

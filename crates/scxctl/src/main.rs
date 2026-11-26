@@ -3,7 +3,7 @@ mod cli;
 use clap::Parser;
 use cli::{Cli, Commands};
 use colored::Colorize;
-use scx_loader::{SchedMode, SupportedSched, dbus::LoaderClientProxyBlocking};
+use scx_loader::{SchedMode, SchedName, dbus::LoaderClientProxyBlocking};
 use std::process::exit;
 use zbus::blocking::Connection;
 
@@ -13,7 +13,7 @@ fn cmd_get(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std::er
     if current_scheduler.as_str() == "unknown" {
         println!("no scx scheduler running");
     } else {
-        let sched = SupportedSched::try_from(current_scheduler.as_str())?;
+        let sched = SchedName::try_from(current_scheduler.as_str())?;
         let current_args: Vec<String> = scx_loader.current_scheduler_args()?;
 
         if current_args.is_empty() {
@@ -45,11 +45,11 @@ fn cmd_modes(
     sched_name: &str,
     show_args: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let sched: SupportedSched = validate_sched(scx_loader, sched_name)?;
+    let sched: SchedName = validate_sched(scx_loader, sched_name)?;
 
     if show_args {
         let mode_args: Vec<(SchedMode, Vec<String>)> =
-            scx_loader.scheduler_mode_args(sched.clone())?;
+            scx_loader.scheduler_mode_args_by_name(&sched)?;
         println!("configuration for {sched:?}:");
         for (mode, args) in mode_args {
             if args.is_empty() {
@@ -63,7 +63,7 @@ fn cmd_modes(
             }
         }
     } else {
-        let modes: Vec<SchedMode> = scx_loader.scheduler_modes(sched.clone())?;
+        let modes: Vec<SchedMode> = scx_loader.scheduler_modes_by_name(&sched)?;
         println!("modes configured for {sched:?}: {modes:?}");
         println!(
             "(unlisted modes run with {sched:?}'s own defaults; use --show-args to see them all)"
@@ -89,20 +89,20 @@ fn cmd_modes(
 /// callers never block or mislead on a transient D-Bus error.
 fn mode_is_configured(
     scx_loader: &LoaderClientProxyBlocking,
-    sched: &SupportedSched,
+    sched: &SchedName,
     mode: SchedMode,
 ) -> bool {
     if mode == SchedMode::Auto {
         return true;
     }
     scx_loader
-        .scheduler_modes(sched.clone())
+        .scheduler_modes_by_name(sched)
         .map_or(true, |modes| modes.contains(&mode))
 }
 
 fn check_mode_configured(
     scx_loader: &LoaderClientProxyBlocking,
-    sched: &SupportedSched,
+    sched: &SchedName,
     mode: SchedMode,
 ) -> bool {
     let is_configured = mode_is_configured(scx_loader, sched, mode);
@@ -134,18 +134,18 @@ fn cmd_start(
         exit(1);
     }
 
-    let sched: SupportedSched = validate_sched(scx_loader, sched_name)?;
+    let sched: SchedName = validate_sched(scx_loader, sched_name)?;
     let mode: SchedMode = mode_name.unwrap_or(SchedMode::Auto);
     if let Some(raw_args) = args {
         let args = validate_args(&raw_args);
-        scx_loader.start_scheduler_with_args(sched.clone(), &args)?;
+        scx_loader.start_scheduler_with_args_by_name(&sched, &args)?;
         println!(
             "started {sched:?} with arguments \"{}\"",
             format_scheduler_args(&args)
         );
     } else {
         let mode_configured = check_mode_configured(scx_loader, &sched, mode);
-        scx_loader.start_scheduler(sched.clone(), mode)?;
+        scx_loader.start_scheduler_by_name(&sched, mode)?;
         report_mode_result("started", &sched, mode, mode_configured);
     }
     Ok(())
@@ -154,12 +154,7 @@ fn cmd_start(
 /// Prints the outcome of a start/switch operation, noting whether the
 /// requested mode actually had configured arguments applied or the
 /// scheduler fell back to its own defaults.
-fn report_mode_result(
-    action: &str,
-    sched: &SupportedSched,
-    mode: SchedMode,
-    mode_configured: bool,
-) {
+fn report_mode_result(action: &str, sched: &SchedName, mode: SchedMode, mode_configured: bool) {
     if mode_configured {
         println!("{action} {sched:?} in {mode:?} mode");
     } else {
@@ -202,14 +197,14 @@ fn cmd_switch(
         exit(1);
     }
 
-    let current_sched = SupportedSched::try_from(current_sched_name.as_str())?;
+    let current_sched = SchedName::try_from(current_sched_name.as_str())?;
 
     // Whether this switch is actually changing to a different scheduler, as
     // opposed to just changing the mode of the one already running. Resolved
     // alongside `sched` so the `None` branch (no `-s` given) can move
     // `current_sched` straight through instead of cloning it just to satisfy
     // a comparison whose answer is already known to be `false`.
-    let (sched, switching_scheduler): (SupportedSched, bool) = match sched_name {
+    let (sched, switching_scheduler): (SchedName, bool) = match sched_name {
         Some(sched_name) => {
             let sched = validate_sched(scx_loader, sched_name)?;
             let switching_scheduler = sched != current_sched;
@@ -223,14 +218,14 @@ fn cmd_switch(
     })?;
     if let Some(raw_args) = args {
         let args = validate_args(&raw_args);
-        scx_loader.switch_scheduler_with_args(sched.clone(), &args)?;
+        scx_loader.switch_scheduler_with_args_by_name(&sched, &args)?;
         println!(
             "switched to {sched:?} with arguments \"{}\"",
             format_scheduler_args(&args)
         );
     } else {
         let mode_configured = check_mode_configured(scx_loader, &sched, mode);
-        scx_loader.switch_scheduler(sched.clone(), mode)?;
+        scx_loader.switch_scheduler_by_name(&sched, mode)?;
         report_mode_result("switched to", &sched, mode, mode_configured);
     }
     Ok(())
@@ -264,7 +259,7 @@ fn cmd_restore(scx_loader: &LoaderClientProxyBlocking) -> Result<(), Box<dyn std
 
     // Fetch the default mode for display
     let default_mode: SchedMode = scx_loader.default_mode()?;
-    let sched = SupportedSched::try_from(default_scheduler.as_str())?;
+    let sched = SchedName::try_from(default_scheduler.as_str())?;
     let mode_configured = mode_is_configured(scx_loader, &sched, default_mode);
     report_mode_result(
         "restored default scheduler",
@@ -403,9 +398,9 @@ enum SchedNameError {
     /// The name isn't on the list of schedulers reported by `scx_loader`.
     UnknownName,
     /// `scx_loader` reports the scheduler as supported, but the name isn't
-    /// one `SupportedSched` can hold. A name this build doesn't know, such as
+    /// one `SchedName` can hold. A name this build doesn't know, such as
     /// a custom scheduler or one added in a newer `scx_loader`, still
-    /// resolves, as `SupportedSched::Custom`.
+    /// resolves, as `SchedName::Custom`.
     UnsupportedByClient,
 }
 
@@ -418,21 +413,21 @@ enum SchedNameError {
 fn resolve_sched_name(
     sched: &str,
     raw_supported_scheds: &[String],
-) -> Result<SupportedSched, SchedNameError> {
+) -> Result<SchedName, SchedNameError> {
     let known = raw_supported_scheds
         .iter()
         .any(|raw| raw.as_str() == sched || remove_scx_prefix(raw) == sched);
     if !known {
         return Err(SchedNameError::UnknownName);
     }
-    SupportedSched::try_from(ensure_scx_prefix(sched).as_str())
+    SchedName::try_from(ensure_scx_prefix(sched).as_str())
         .map_err(|_| SchedNameError::UnsupportedByClient)
 }
 
 fn validate_sched(
     scx_loader: &LoaderClientProxyBlocking,
     sched: &str,
-) -> Result<SupportedSched, Box<dyn std::error::Error>> {
+) -> Result<SchedName, Box<dyn std::error::Error>> {
     let raw_supported_scheds: Vec<String> = scx_loader.supported_schedulers()?;
     match resolve_sched_name(sched, &raw_supported_scheds) {
         Ok(resolved) => Ok(resolved),
@@ -465,6 +460,7 @@ fn validate_sched(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use scx_loader::SupportedSched;
 
     #[test]
     fn switch_to_different_scheduler_defaults_to_auto() {
@@ -509,7 +505,7 @@ mod tests {
     fn resolves_sched_name_with_prefix() {
         assert_eq!(
             resolve_sched_name("scx_lavd", &reported_scheds()),
-            Ok(SupportedSched::Lavd)
+            Ok(SchedName::Builtin(SupportedSched::Lavd))
         );
     }
 
@@ -517,7 +513,7 @@ mod tests {
     fn resolves_sched_name_without_prefix() {
         assert_eq!(
             resolve_sched_name("bpfland", &reported_scheds()),
-            Ok(SupportedSched::Bpfland)
+            Ok(SchedName::Builtin(SupportedSched::Bpfland))
         );
     }
 
@@ -660,13 +656,13 @@ mod tests {
         let reported = vec!["scx_from_the_future".to_string()];
         assert_eq!(
             resolve_sched_name("from_the_future", &reported),
-            Ok(SupportedSched::Custom("scx_from_the_future".to_string()))
+            Ok(SchedName::Custom("scx_from_the_future".parse().unwrap()))
         );
     }
 
     #[test]
     fn rejects_reported_sched_with_invalid_name() {
-        // A reported name SupportedSched can't hold must not be an unwrap
+        // A reported name SchedName can't hold must not be an unwrap
         // panic; it resolves to a distinct, actionable error instead.
         let reported = vec!["scx_Bad-Name".to_string()];
         assert_eq!(
