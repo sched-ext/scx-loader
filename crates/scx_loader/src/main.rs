@@ -11,7 +11,7 @@
 mod logger;
 
 use scx_loader::dbus::LoaderClientProxy;
-use scx_loader::{SchedMode, SupportedSched, config};
+use scx_loader::{SchedMode, SchedName, SupportedSched, config};
 
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -39,36 +39,36 @@ enum ScxMessage {
     /// Stop the scheduler, if any
     StopSched,
     /// Start the scheduler with the given mode
-    StartSched((SupportedSched, SchedMode)),
+    StartSched((SchedName, SchedMode)),
     /// Start the scheduler with the given scx arguments
-    StartSchedArgs((SupportedSched, Vec<String>)),
+    StartSchedArgs((SchedName, Vec<String>)),
     /// Switch to another scheduler with the given mode
-    SwitchSched((SupportedSched, SchedMode)),
+    SwitchSched((SchedName, SchedMode)),
     /// Switch to another scheduler with the given scx arguments
-    SwitchSchedArgs((SupportedSched, Vec<String>)),
+    SwitchSchedArgs((SchedName, Vec<String>)),
     /// Restart the currently running scheduler with original configuration
-    RestartSched((SupportedSched, Option<Vec<String>>, SchedMode)),
+    RestartSched((SchedName, Option<Vec<String>>, SchedMode)),
 }
 
 #[derive(Debug, PartialEq)]
 enum RunnerMessage {
     /// Switch to another scheduler with the given scx arguments
-    Switch((SupportedSched, Vec<String>)),
+    Switch((SchedName, Vec<String>)),
     /// Start the scheduler with the given scx arguments
-    Start((SupportedSched, Vec<String>)),
+    Start((SchedName, Vec<String>)),
     /// Stop the scheduler, if any
     Stop,
     /// Restart the currently running scheduler with same arguments
-    Restart((SupportedSched, Vec<String>)),
+    Restart((SchedName, Vec<String>)),
 }
 
 struct ScxLoader {
-    current_scx: Option<SupportedSched>,
+    current_scx: Option<SchedName>,
     current_mode: SchedMode,
     current_args: Option<Vec<String>>,
     channel: UnboundedSender<ScxMessage>,
     // Store default configuration from config file
-    default_sched: Option<SupportedSched>,
+    default_sched: Option<SchedName>,
     default_mode: SchedMode,
     // Full config, kept around so clients can query which modes are actually
     // configured for a given scheduler (see `scheduler_modes`).
@@ -87,7 +87,7 @@ const ROOT_ACTION_ID: &str = "org.scx.loader.manage-schedulers";
 impl ScxLoader {
     /// Rejects a custom scheduler name the config doesn't define. Any name
     /// of the right form deserializes, so every method taking one checks it.
-    fn check_known_sched(&self, scx_name: &SupportedSched) -> zbus::fdo::Result<()> {
+    fn check_known_sched(&self, scx_name: &SchedName) -> zbus::fdo::Result<()> {
         if config::is_known_sched(&self.config, scx_name) {
             Ok(())
         } else {
@@ -174,7 +174,7 @@ impl ScxLoader {
 
     /// Get supported modes for the particular scx scheduler
     #[allow(clippy::needless_pass_by_value)]
-    fn scheduler_modes(&self, scx_name: SupportedSched) -> zbus::fdo::Result<Vec<SchedMode>> {
+    fn scheduler_modes(&self, scx_name: SchedName) -> zbus::fdo::Result<Vec<SchedMode>> {
         self.check_known_sched(&scx_name)?;
         Ok(config::get_configured_modes(&self.config, &scx_name))
     }
@@ -183,7 +183,7 @@ impl ScxLoader {
     #[allow(clippy::needless_pass_by_value)]
     fn scheduler_mode_args(
         &self,
-        scx_name: SupportedSched,
+        scx_name: SchedName,
     ) -> zbus::fdo::Result<Vec<(SchedMode, Vec<String>)>> {
         self.check_known_sched(&scx_name)?;
         Ok(config::get_all_mode_args(&self.config, &scx_name))
@@ -193,7 +193,7 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
-        scx_name: SupportedSched,
+        scx_name: SchedName,
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
         self.check_known_sched(&scx_name)?;
@@ -214,7 +214,7 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
-        scx_name: SupportedSched,
+        scx_name: SchedName,
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
         self.check_known_sched(&scx_name)?;
@@ -237,7 +237,7 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
-        scx_name: SupportedSched,
+        scx_name: SchedName,
         sched_mode: SchedMode,
     ) -> zbus::fdo::Result<()> {
         self.check_known_sched(&scx_name)?;
@@ -258,7 +258,7 @@ impl ScxLoader {
         &mut self,
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] hdr: Header<'_>,
-        scx_name: SupportedSched,
+        scx_name: SchedName,
         scx_args: Vec<String>,
     ) -> zbus::fdo::Result<()> {
         self.check_known_sched(&scx_name)?;
@@ -476,7 +476,7 @@ async fn main() -> Result<()> {
 
         let loader_client = LoaderClientProxy::new(&connection).await?;
         loader_client
-            .switch_scheduler(default_sched.clone(), default_mode)
+            .switch_scheduler_by_name(default_sched, default_mode)
             .await?;
     }
 
@@ -660,7 +660,7 @@ async fn handle_child_process(
 }
 
 /// Returns the program to run for `scx_sched`, see `config::get_sched_program`.
-fn sched_program(config: &config::Config, scx_sched: &SupportedSched) -> Option<String> {
+fn sched_program(config: &config::Config, scx_sched: &SchedName) -> Option<String> {
     let program = config::get_sched_program(config, scx_sched);
     if program.is_none() {
         log::error!("{} is not defined in the config", scx_sched.as_str());
